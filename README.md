@@ -1,7 +1,10 @@
 # Facebook Helper (TypeScript)
 
-Chrome extension (Manifest V3) that detects the photos of a Facebook post and
-downloads them as a ZIP (or as separate files).
+Chrome extension (Manifest V3) that provides two core features:
+1. **Photo Downloader (Completed):** Detects all photos of a Facebook post (including hidden "+N" photo viewer sets) and downloads them as a high-resolution ZIP or separate files.
+2. **Comment Manager & Reply System (In Active Development):** Detects, tracks, and replies to comments with multi-language support (English & Bengali) and modern React/Lexical compatibility.
+
+See [COMMENT_ROADMAP.md](COMMENT_ROADMAP.md) for the detailed comment system roadmap and development phases.
 
 ## Quick start
 
