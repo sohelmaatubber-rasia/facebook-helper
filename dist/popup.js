@@ -27,21 +27,6 @@
     selectAll: $("selectAllCollected"),
     list: $("collectedPhotoList")
   };
-  var elChecked = {
-    count: $("checkedCount"),
-    clear: $("clearCheckedBtn"),
-    zip: $("downloadCheckedZipBtn"),
-    direct: $("downloadCheckedDirectBtn")
-  };
-  var checkedPhotos = [];
-  function renderCheckedPhotos(items) {
-    checkedPhotos = items || [];
-    const count = checkedPhotos.length;
-    elChecked.count.textContent = String(count);
-    elChecked.zip.disabled = count === 0;
-    elChecked.direct.disabled = count === 0;
-    elChecked.clear.hidden = count === 0;
-  }
   var STALL_MS = 12e4;
   var SCAN_MAX_AGE = 6e5;
   var ACTIVE_JOB_STATES = ["running", "zipping", "saving", "fallback"];
@@ -810,13 +795,8 @@ ${job.failed || 0} failed`;
     });
     updateDownloadButtonsState();
   });
-  elChecked.zip.addEventListener("click", () => void startDownloadUrls("START_DOWNLOAD", checkedPhotos.map((p) => p.url)));
-  elChecked.direct.addEventListener("click", () => void startDownloadUrls("START_DIRECT", checkedPhotos.map((p) => p.url)));
-  elChecked.clear.addEventListener("click", () => void chrome.storage.local.set({ fb_checked_photos: [] }));
   void (async function init() {
     const { job, scan } = await chrome.storage.session.get(["job", "scan"]);
-    const { fb_checked_photos } = await chrome.storage.local.get("fb_checked_photos");
-    renderCheckedPhotos(fb_checked_photos || []);
     if (job && ACTIVE_JOB_STATES.includes(job.state)) renderJob(job);
     if (scan?.state === "running") renderScan(scan);
     else if (scan?.state === "done") {
@@ -829,9 +809,6 @@ ${job.failed || 0} failed`;
       if (changes.job) renderJob(changes.job.newValue);
       if (changes.scan) renderScan(changes.scan.newValue);
     } else if (area === "local") {
-      if (changes["fb_checked_photos"]) {
-        renderCheckedPhotos(changes["fb_checked_photos"].newValue || []);
-      }
       if (changes["fb_comments"]) {
         allComments = changes["fb_comments"].newValue || [];
         renderComments();

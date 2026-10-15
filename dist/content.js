@@ -328,7 +328,17 @@
   }
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   var isViewerUrl = () => /\/photo\/?$|\/photo\.php|\/photos\//.test(location.pathname);
-  var currentFbid = () => new URL(location.href).searchParams.get("fbid") || "";
+  function currentFbid() {
+    try {
+      const u = new URL(location.href);
+      const param = u.searchParams.get("fbid");
+      if (param) return param;
+      const m = u.pathname.match(/\/photos?\/[^/]*\/(\d+)/) || u.pathname.match(/\/photo\/(\d+)/);
+      if (m) return m[1];
+    } catch (_) {
+    }
+    return "";
+  }
   async function waitFor(predicate, timeoutMs, stepMs = 150) {
     let elapsed = 0;
     let lastTick = Date.now();
@@ -386,9 +396,9 @@
     const changed = () => {
       const img2 = viewerImage();
       if (!img2) return null;
-      const idChanged = currentFbid() && currentFbid() !== prev.fbid;
-      if (idChanged) return img2;
-      if (!prev.fbid && img2.naturalWidth) {
+      const curId = currentFbid();
+      if (curId && curId !== prev.fbid) return img2;
+      if (img2.naturalWidth) {
         const url = getBestImageUrl(img2);
         if (url && dedupeKey(url) !== prev.key) return img2;
       }
@@ -425,10 +435,11 @@
   }
   function snapshot(img) {
     const url = getBestImageUrl(img);
+    const fbid = currentFbid();
     return {
       url,
-      key: dedupeKey(url),
-      fbid: currentFbid(),
+      key: fbid ? `fbid_${fbid}` : dedupeKey(url),
+      fbid,
       width: img.naturalWidth || 0,
       height: img.naturalHeight || 0,
       source: "viewer"
@@ -492,7 +503,7 @@
             if (cur) {
               const settled = await settle(cur);
               const snap2 = snapshot(settled);
-              if (snap2.url && !collected.has(snap2.key) && snap2.key !== prev.key) {
+              if (snap2.url && !collected.has(snap2.key)) {
                 collected.set(snap2.key, snap2);
                 progress(collected);
               }

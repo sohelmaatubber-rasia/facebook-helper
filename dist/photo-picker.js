@@ -15,7 +15,7 @@
       position: absolute !important;
       top: 10px !important;
       left: 10px !important;
-      z-index: 1000 !important;
+      z-index: 2147483640 !important;
       pointer-events: auto !important;
       user-select: none !important;
       line-height: 0 !important;
@@ -62,7 +62,7 @@
       border-radius: 12px !important;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
       padding: 10px 14px !important;
-      display: flex !important;
+      display: none;
       align-items: center !important;
       gap: 10px !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
@@ -109,14 +109,16 @@
       return false;
     }
     const rect = img.getBoundingClientRect();
-    if (rect.width < 120 || rect.height < 120) return false;
+    const w = rect.width || img.naturalWidth || img.clientWidth || img.width;
+    const h = rect.height || img.naturalHeight || img.clientHeight || img.height;
+    if (w < 80 || h < 80) return false;
     if (img.closest('form, [role="textbox"], [data-visualcompletion="ignore-dynamic-extra"]')) return false;
     const label = (img.getAttribute("aria-label") || "").toLowerCase();
     if (label.includes("profile picture") || label.includes("avatar")) return false;
     return true;
   }
   function attachCheckbox(img) {
-    const link = img.closest('a[href*="/photo"], a[href*="/photos/"]');
+    const link = img.closest('a[href*="/photo"], a[href*="/photos/"], a[role="link"], div[role="link"]');
     const container = link || img.parentElement;
     if (!container) return;
     if (container.querySelector(`.${CHECKBOX_WRAPPER_CLASS}`)) return;
@@ -139,9 +141,6 @@
       <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
     </svg>
   `;
-    const stopProp = (e) => {
-      e.stopPropagation();
-    };
     const handleToggle = (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -149,12 +148,8 @@
       const freshUrl = getBestPhotoUrl(img) || bestUrl;
       togglePhoto(photoId, freshUrl);
     };
-    box.addEventListener("click", handleToggle, true);
-    box.addEventListener("mousedown", stopProp, true);
-    box.addEventListener("mouseup", stopProp, true);
-    box.addEventListener("pointerdown", stopProp, true);
-    box.addEventListener("pointerup", stopProp, true);
-    box.addEventListener("dblclick", handleToggle, true);
+    box.addEventListener("click", handleToggle);
+    box.addEventListener("mousedown", (e) => e.stopPropagation());
     wrapper.appendChild(box);
     container.appendChild(wrapper);
   }
@@ -212,7 +207,7 @@
     }
     const bar = document.createElement("div");
     bar.id = "fb-helper-floating-bar";
-    bar.style.display = "none";
+    bar.style.setProperty("display", "none", "important");
     bar.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;">
       <span style="font-size:16px;">\u{1F4F7}</span>
@@ -291,9 +286,9 @@
     const countEl = bar.querySelector("#fb-picker-float-count");
     if (countEl) countEl.textContent = String(checkedPhotos.length);
     if (checkedPhotos.length > 0) {
-      bar.style.display = "flex";
+      bar.style.setProperty("display", "flex", "important");
     } else {
-      bar.style.display = "none";
+      bar.style.setProperty("display", "none", "important");
     }
   }
   async function init() {

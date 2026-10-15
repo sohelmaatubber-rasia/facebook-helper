@@ -544,7 +544,16 @@ function detectPhotos(): DetectResponse {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const isViewerUrl = (): boolean => /\/photo\/?$|\/photo\.php|\/photos\//.test(location.pathname);
-const currentFbid = (): string => new URL(location.href).searchParams.get("fbid") || "";
+function currentFbid(): string {
+  try {
+    const u = new URL(location.href);
+    const param = u.searchParams.get("fbid");
+    if (param) return param;
+    const m = u.pathname.match(/\/photos?\/[^/]*\/(\d+)/) || u.pathname.match(/\/photo\/(\d+)/);
+    if (m) return m[1];
+  } catch (_) {}
+  return "";
+}
 
 /**
  * Poll `predicate` until it returns a truthy value, the timeout passes, or the
@@ -623,13 +632,10 @@ async function step(direction: Direction, prev: { key: string; fbid: string }): 
   const changed = (): HTMLImageElement | null => {
     const img = viewerImage();
     if (!img) return null;
-    // fbid change in the URL is the most reliable signal that the viewer moved.
-    // We do NOT require img.complete here — settle() handles waiting for the
-    // full-resolution image to load afterward.
-    const idChanged = currentFbid() && currentFbid() !== prev.fbid;
-    if (idChanged) return img;
-    // Fallback: no fbid in URL — detect by image URL path change instead.
-    if (!prev.fbid && img.naturalWidth) {
+    const curId = currentFbid();
+    if (curId && curId !== prev.fbid) return img;
+    // Fallback: detect by image URL path change even if fbid was identical or not in URL
+    if (img.naturalWidth) {
       const url = getBestImageUrl(img);
       if (url && dedupeKey(url) !== prev.key) return img;
     }
@@ -677,10 +683,11 @@ async function settle(img: HTMLImageElement): Promise<HTMLImageElement> {
 
 function snapshot(img: HTMLImageElement): ViewerSnapshot {
   const url = getBestImageUrl(img);
+  const fbid = currentFbid();
   return {
     url,
-    key: dedupeKey(url),
-    fbid: currentFbid(),
+    key: fbid ? `fbid_${fbid}` : dedupeKey(url),
+    fbid,
     width: img.naturalWidth || 0,
     height: img.naturalHeight || 0,
     source: "viewer",
@@ -759,7 +766,7 @@ async function collectAll(): Promise<void> {
           if (cur) {
             const settled = await settle(cur);
             const snap = snapshot(settled);
-            if (snap.url && !collected.has(snap.key) && snap.key !== prev.key) {
+            if (snap.url && !collected.has(snap.key)) {
               collected.set(snap.key, snap);
               progress(collected);
             }

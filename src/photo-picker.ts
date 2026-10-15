@@ -31,7 +31,7 @@ function injectStyles(): void {
       position: absolute !important;
       top: 10px !important;
       left: 10px !important;
-      z-index: 1000 !important;
+      z-index: 2147483640 !important;
       pointer-events: auto !important;
       user-select: none !important;
       line-height: 0 !important;
@@ -78,7 +78,7 @@ function injectStyles(): void {
       border-radius: 12px !important;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
       padding: 10px 14px !important;
-      display: flex !important;
+      display: none;
       align-items: center !important;
       gap: 10px !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
@@ -132,9 +132,11 @@ function isPhotoCandidate(img: HTMLImageElement): boolean {
     return false;
   }
 
-  // Check element bounding box
+  // Check element bounding box or natural dimensions
   const rect = img.getBoundingClientRect();
-  if (rect.width < 120 || rect.height < 120) return false;
+  const w = rect.width || img.naturalWidth || img.clientWidth || img.width;
+  const h = rect.height || img.naturalHeight || img.clientHeight || img.height;
+  if (w < 80 || h < 80) return false;
 
   // Ignore avatars / profile pictures and comment inputs
   if (img.closest('form, [role="textbox"], [data-visualcompletion="ignore-dynamic-extra"]')) return false;
@@ -147,7 +149,7 @@ function isPhotoCandidate(img: HTMLImageElement): boolean {
 // ---- Attach Checkmark Overlay
 function attachCheckbox(img: HTMLImageElement): void {
   // Find container
-  const link = img.closest('a[href*="/photo"], a[href*="/photos/"]') as HTMLElement | null;
+  const link = img.closest('a[href*="/photo"], a[href*="/photos/"], a[role="link"], div[role="link"]') as HTMLElement | null;
   const container = link || img.parentElement;
   if (!container) return;
 
@@ -179,11 +181,7 @@ function attachCheckbox(img: HTMLImageElement): void {
     </svg>
   `;
 
-  // Intercept all clicks and navigation so checking doesn't open the Facebook photo lightbox
-  const stopProp = (e: Event): void => {
-    e.stopPropagation();
-  };
-
+  // Intercept click cleanly without swallowing pointerdown in capture phase
   const handleToggle = (e: MouseEvent): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -192,12 +190,8 @@ function attachCheckbox(img: HTMLImageElement): void {
     togglePhoto(photoId, freshUrl);
   };
 
-  box.addEventListener("click", handleToggle, true);
-  box.addEventListener("mousedown", stopProp, true);
-  box.addEventListener("mouseup", stopProp, true);
-  box.addEventListener("pointerdown", stopProp, true);
-  box.addEventListener("pointerup", stopProp, true);
-  box.addEventListener("dblclick", handleToggle, true);
+  box.addEventListener("click", handleToggle);
+  box.addEventListener("mousedown", (e) => e.stopPropagation());
 
   wrapper.appendChild(box);
   container.appendChild(wrapper);
@@ -269,7 +263,7 @@ function ensureFloatingBar(): HTMLElement {
 
   const bar = document.createElement("div");
   bar.id = "fb-helper-floating-bar";
-  bar.style.display = "none";
+  bar.style.setProperty("display", "none", "important");
   bar.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;">
       <span style="font-size:16px;">📷</span>
@@ -357,9 +351,9 @@ function renderFloatingBar(): void {
   if (countEl) countEl.textContent = String(checkedPhotos.length);
 
   if (checkedPhotos.length > 0) {
-    bar.style.display = "flex";
+    bar.style.setProperty("display", "flex", "important");
   } else {
-    bar.style.display = "none";
+    bar.style.setProperty("display", "none", "important");
   }
 }
 
