@@ -133,3 +133,20 @@ p { margin: 6px 0; }
     background: #e7f3ff; color: #1877f2; border: 1px solid #cce0ff;
 }
 .cm-find-banner.warn { background: #fff4d6; color: #8a5a00; border-color: #f0d080; }
+
+/* ---- checked photos section ---- */
+.checked-section {
+    background: #f0f2f5;
+    border: 1px solid #d8dadf;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 10px 0 6px 0;
+}
+.checked-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: #1c1e21;
+}

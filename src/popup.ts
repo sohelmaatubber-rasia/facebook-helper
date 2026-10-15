@@ -9,6 +9,7 @@
 import type {
   AckResponse,
   BackgroundMessage,
+  CheckedPhotoItem,
   CommentManagerMessage,
   CommentManagerResponse,
   ContentRequest,
@@ -44,6 +45,24 @@ const el = {
   status: $("status"),
   summary: $("summary"),
 };
+
+const elChecked = {
+  count: $("checkedCount"),
+  clear: $<HTMLButtonElement>("clearCheckedBtn"),
+  zip: $<HTMLButtonElement>("downloadCheckedZipBtn"),
+  direct: $<HTMLButtonElement>("downloadCheckedDirectBtn"),
+};
+
+let checkedPhotos: CheckedPhotoItem[] = [];
+
+function renderCheckedPhotos(items: CheckedPhotoItem[]): void {
+  checkedPhotos = items || [];
+  const count = checkedPhotos.length;
+  elChecked.count.textContent = String(count);
+  elChecked.zip.disabled = count === 0;
+  elChecked.direct.disabled = count === 0;
+  elChecked.clear.hidden = count === 0;
+}
 
 const STALL_MS = 120000; // a running scan with no update for this long is considered stalled
 const SCAN_MAX_AGE = 600000; // a finished scan is reused after reopening the popup for this long (same page only)
@@ -243,15 +262,19 @@ function renderScan(scan: Scan | undefined): void {
 }
 
 // ---------------------------------------------------------------- download
-async function startDownload(kind: "START_DOWNLOAD" | "START_DIRECT"): Promise<void> {
-  if (!photos.length) return;
+async function startDownloadUrls(kind: "START_DOWNLOAD" | "START_DIRECT", urls: string[]): Promise<void> {
+  if (!urls.length) return;
   el.summary.textContent = "";
   setProgress(0);
   setStatus("Starting...");
-  const res = await sendToBackground({ type: kind, urls: photos.map((p) => p.url) });
+  const res = await sendToBackground({ type: kind, urls });
   if (!res?.ok) {
     setStatus(res?.error === "BUSY" ? "A download is already running." : "Could not start the download.", true);
   }
+}
+
+async function startDownload(kind: "START_DOWNLOAD" | "START_DIRECT"): Promise<void> {
+  await startDownloadUrls(kind, photos.map((p) => p.url));
 }
 
 // ------------------------------------------------------- render background job
@@ -889,8 +912,16 @@ el.clear.addEventListener("click", () => void clearPhotos());
 el.download.addEventListener("click", () => void startDownload("START_DOWNLOAD"));
 el.direct.addEventListener("click", () => void startDownload("START_DIRECT"));
 
+elChecked.zip.addEventListener("click", () => void startDownloadUrls("START_DOWNLOAD", checkedPhotos.map((p) => p.url)));
+elChecked.direct.addEventListener("click", () => void startDownloadUrls("START_DIRECT", checkedPhotos.map((p) => p.url)));
+elChecked.clear.addEventListener("click", () => void chrome.storage.local.set({ fb_checked_photos: [] }));
+
 void (async function init(): Promise<void> {
   const { job, scan } = (await chrome.storage.session.get(["job", "scan"])) as { job?: Job; scan?: Scan };
+  const { fb_checked_photos } = (await chrome.storage.local.get("fb_checked_photos")) as {
+    fb_checked_photos?: CheckedPhotoItem[];
+  };
+  renderCheckedPhotos(fb_checked_photos || []);
 
   // Only show a download that is still in progress; a finished one is stale on a fresh popup.
   if (job && ACTIVE_JOB_STATES.includes(job.state)) renderJob(job);
@@ -908,6 +939,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes.job) renderJob(changes.job.newValue as Job | undefined);
     if (changes.scan) renderScan(changes.scan.newValue as Scan | undefined);
   } else if (area === "local") {
+    if (changes["fb_checked_photos"]) {
+      renderCheckedPhotos((changes["fb_checked_photos"].newValue as CheckedPhotoItem[]) || []);
+    }
     if (changes["fb_comments"]) {
       allComments = (changes["fb_comments"].newValue as SavedComment[]) || [];
       renderComments();

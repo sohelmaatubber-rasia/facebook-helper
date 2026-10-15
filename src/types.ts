@@ -210,3 +210,11 @@ export type CommentManagerResponse =
   | { ok: true; comments: SavedComment[] }
   | { ok: true; comments?: undefined; savedCount?: number }
   | { ok: false; error: string };
+
+// ----------------------------------------------------------- checked photos (scroll picker)
+
+export interface CheckedPhotoItem {
+  id: string;
+  url: string;
+  addedAt: number;
+}

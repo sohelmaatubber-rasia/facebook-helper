@@ -20,6 +20,21 @@
     status: $("status"),
     summary: $("summary")
   };
+  var elChecked = {
+    count: $("checkedCount"),
+    clear: $("clearCheckedBtn"),
+    zip: $("downloadCheckedZipBtn"),
+    direct: $("downloadCheckedDirectBtn")
+  };
+  var checkedPhotos = [];
+  function renderCheckedPhotos(items) {
+    checkedPhotos = items || [];
+    const count = checkedPhotos.length;
+    elChecked.count.textContent = String(count);
+    elChecked.zip.disabled = count === 0;
+    elChecked.direct.disabled = count === 0;
+    elChecked.clear.hidden = count === 0;
+  }
   var STALL_MS = 12e4;
   var SCAN_MAX_AGE = 6e5;
   var ACTIVE_JOB_STATES = ["running", "zipping", "saving", "fallback"];
@@ -183,15 +198,18 @@
         break;
     }
   }
-  async function startDownload(kind) {
-    if (!photos.length) return;
+  async function startDownloadUrls(kind, urls) {
+    if (!urls.length) return;
     el.summary.textContent = "";
     setProgress(0);
     setStatus("Starting...");
-    const res = await sendToBackground({ type: kind, urls: photos.map((p) => p.url) });
+    const res = await sendToBackground({ type: kind, urls });
     if (!res?.ok) {
       setStatus(res?.error === "BUSY" ? "A download is already running." : "Could not start the download.", true);
     }
+  }
+  async function startDownload(kind) {
+    await startDownloadUrls(kind, photos.map((p) => p.url));
   }
   function renderJob(job) {
     if (!job || job.state === "idle") return;
@@ -709,8 +727,13 @@ ${job.failed || 0} failed`;
   el.clear.addEventListener("click", () => void clearPhotos());
   el.download.addEventListener("click", () => void startDownload("START_DOWNLOAD"));
   el.direct.addEventListener("click", () => void startDownload("START_DIRECT"));
+  elChecked.zip.addEventListener("click", () => void startDownloadUrls("START_DOWNLOAD", checkedPhotos.map((p) => p.url)));
+  elChecked.direct.addEventListener("click", () => void startDownloadUrls("START_DIRECT", checkedPhotos.map((p) => p.url)));
+  elChecked.clear.addEventListener("click", () => void chrome.storage.local.set({ fb_checked_photos: [] }));
   void (async function init() {
     const { job, scan } = await chrome.storage.session.get(["job", "scan"]);
+    const { fb_checked_photos } = await chrome.storage.local.get("fb_checked_photos");
+    renderCheckedPhotos(fb_checked_photos || []);
     if (job && ACTIVE_JOB_STATES.includes(job.state)) renderJob(job);
     if (scan?.state === "running") renderScan(scan);
     else if (scan?.state === "done") {
@@ -723,6 +746,9 @@ ${job.failed || 0} failed`;
       if (changes.job) renderJob(changes.job.newValue);
       if (changes.scan) renderScan(changes.scan.newValue);
     } else if (area === "local") {
+      if (changes["fb_checked_photos"]) {
+        renderCheckedPhotos(changes["fb_checked_photos"].newValue || []);
+      }
       if (changes["fb_comments"]) {
         allComments = changes["fb_comments"].newValue || [];
         renderComments();

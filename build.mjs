@@ -15,6 +15,7 @@ const options = {
     background: "src/background.ts",
     content: "src/content.ts",     // injected with chrome.scripting.executeScript => must be a classic script
     "comment-scanner": "src/comment-scanner.ts", // persistent content script for comment detection
+    "photo-picker": "src/photo-picker.ts",       // persistent content script for scroll-and-check photo selection
     offscreen: "src/offscreen.ts",  // bundles JSZip
     popup: "src/popup.ts",
   },

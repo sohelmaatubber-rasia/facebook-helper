@@ -34,6 +34,18 @@
 
         <p>Status: <span id="status">Ready</span></p>
         <pre id="summary" class="summary"></pre>
+
+        <!-- ================= Checked Photos on Page ================= -->
+        <div id="checkedSection" class="checked-section">
+            <div class="checked-header">
+                <span>☑ Checked on Page: <strong id="checkedCount">0</strong> photos</span>
+                <button id="clearCheckedBtn" class="cm-btn-sm" style="font-size:11px;padding:2px 6px;" hidden>✕ Clear</button>
+            </div>
+            <div class="checked-actions" style="display:flex;gap:6px;margin-top:6px;">
+                <button id="downloadCheckedZipBtn" style="flex:1;margin:0;padding:6px;font-size:12px;" disabled>Download Checked (ZIP)</button>
+                <button id="downloadCheckedDirectBtn" style="flex:1;margin:0;padding:6px;font-size:12px;" disabled>Download Direct</button>
+            </div>
+        </div>
     </section>
 
     <!-- ==================== Comment Manager Tab ==================== -->
