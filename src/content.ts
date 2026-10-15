@@ -833,6 +833,21 @@ function gotoCommentOnPage(commentText: string): void {
       }
     }
 
+    // Check img[alt] for emoji comments
+    for (const img of document.querySelectorAll<HTMLImageElement>("img[alt]")) {
+      const alt = (img.getAttribute("alt") || "").toLowerCase();
+      if (alt && (alt.includes(trimmed) || trimmed.includes(alt))) {
+        const parent = img.closest<HTMLElement>('[role="article"], div[dir="auto"]') || img.parentElement;
+        if (!parent || (parent.textContent || "").length > 2000) continue;
+        parent.scrollIntoView({ behavior: "smooth", block: "center" });
+        const prev = parent.style.cssText;
+        parent.style.cssText += ";outline:3px solid #1877f2;border-radius:3px;background:#e7f3ff;transition:all 0.5s;";
+        setTimeout(() => { parent.style.cssText = prev; }, 3000);
+        showGotoBanner("✓ Comment found and highlighted.", false);
+        return;
+      }
+    }
+
     elapsed += STEP_MS;
     setTimeout(attempt, STEP_MS);
   }
@@ -906,6 +921,20 @@ async function replyToCommentOnPage(
     }
   }
 
+  // Check img[alt] for emoji comments
+  if (!targetEl) {
+    for (const img of document.querySelectorAll<HTMLImageElement>("img[alt]")) {
+      const alt = (img.getAttribute("alt") || "").toLowerCase();
+      if (alt && (alt.includes(normalizedTarget) || normalizedTarget.includes(alt))) {
+        const parent = img.closest<HTMLElement>('[role="article"]') || img.parentElement;
+        if (parent && (parent.textContent || "").length < 2000) {
+          targetEl = parent;
+          break;
+        }
+      }
+    }
+  }
+
   // If still not found, expand hidden comments once
   if (!targetEl) {
     const moreBtn = [...document.querySelectorAll<HTMLElement>('[role="button"]')].find((n) =>
@@ -924,6 +953,19 @@ async function replyToCommentOnPage(
           if (parent && (parent.textContent || "").length < 2000) {
             targetEl = parent;
             break;
+          }
+        }
+      }
+
+      if (!targetEl) {
+        for (const img of document.querySelectorAll<HTMLImageElement>("img[alt]")) {
+          const alt = (img.getAttribute("alt") || "").toLowerCase();
+          if (alt && (alt.includes(normalizedTarget) || normalizedTarget.includes(alt))) {
+            const parent = img.closest<HTMLElement>('[role="article"]') || img.parentElement;
+            if (parent && (parent.textContent || "").length < 2000) {
+              targetEl = parent;
+              break;
+            }
           }
         }
       }
@@ -1072,7 +1114,7 @@ async function replyToCommentOnPage(
 // -------------------------------------------------- scan post comments engine
 
 const NON_USER_PATH_RE =
-  /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about)\b/i;
+  /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about|photo|photos|posts|stories|reel|reels|share|permalink|login|messages|notifications|bookmarks|friends)\b/i;
 const POST_HREF_RE =
   /\/(?:posts|permalink|story\.php|(?:photo|reel)\/|\d{10,}\/posts\/|share\/p\/)|\?story_fbid=/;
 const COMMENT_ACTION_LABEL_RE =
@@ -1085,32 +1127,53 @@ function profilePathFromHref(href: string): string {
   try {
     const u = new URL(href, location.href);
     if (u.hostname !== "www.facebook.com" && !u.hostname.endsWith(".facebook.com")) return "";
-    if (NON_USER_PATH_RE.test(u.pathname)) return "";
 
-    if (u.pathname === "/profile.php") {
+    let pathname = u.pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch (_) {}
+
+    if (NON_USER_PATH_RE.test(pathname)) return "";
+
+    // /profile.php?id=123456
+    if (pathname === "/profile.php") {
       const id = u.searchParams.get("id");
       return id ? `/profile.php?id=${id}` : "";
     }
-    const peopleM = u.pathname.match(/^\/people\/[^/]+\/(\d+)/);
+
+    // /people/username/123456 or /people/unicode-name/123456
+    const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
     if (peopleM) return `/profile.php?id=${peopleM[1]}`;
 
-    const slugM = u.pathname.match(/^\/([a-zA-Z0-9][a-zA-Z0-9._-]*)(?:\/.*)?$/);
-    if (slugM) {
-      const slug = slugM[1];
-      if (NON_USER_PATH_RE.test(`/${slug}`)) return "";
-      return `/${slug}`;
+    // Extract first segment after /
+    const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
+    const firstSegment = segments[0];
+
+    if (firstSegment && !NON_USER_PATH_RE.test(`/${firstSegment}`)) {
+      return `/${firstSegment}`;
     }
   } catch (_) {}
   return "";
 }
 
-function makeCommentId(postUrl: string, text: string, authorId: string): string {
-  const raw = `${authorId}|${postUrl}|${text.slice(0, 150)}`;
-  try {
-    return btoa(unescape(encodeURIComponent(raw)));
-  } catch (_) {
-    return btoa(raw.replace(/[^\x00-\x7F]/g, "?"));
+/** 64-bit multi-round integer hash: completely immune to Unicode/emoji crashes and collisions */
+function hashString(str: string): string {
+  let h1 = 0xdeadbeef, h2 = 0x41c64e6d;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
   }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+function makeCommentId(postUrl: string, text: string, authorId: string, commentId?: string): string {
+  if (commentId) return `fb_${commentId}`;
+  return `cid_${hashString(`${authorId}|${postUrl}|${text}`)}`;
 }
 
 function extractCommentId(el: Element): string | undefined {
@@ -1162,61 +1225,253 @@ function extractPostUrlFromPage(el?: Element): string {
   return location.href;
 }
 
-function extractCommentTextContent(commentRoot: Element, authorName: string): string {
-  const parts: string[] = [];
-  const walker = document.createTreeWalker(commentRoot, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node): number => {
-      const text = (node.textContent || "").trim();
-      if (!text) return NodeFilter.FILTER_REJECT;
-
-      let el: Element | null = node.parentElement;
-      while (el && el !== commentRoot) {
-        const tag = el.tagName;
-        const role = (el.getAttribute("role") || "").toLowerCase();
-        if (tag === "BUTTON" || role === "button") return NodeFilter.FILTER_REJECT;
-        if (tag === "A") {
-          const linkText = (el.textContent || "").trim();
-          if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return NodeFilter.FILTER_REJECT;
-        }
-        el = el.parentElement;
-      }
-
-      if (UI_TEXT_CLEAN_RE.test(text) || text === authorName) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const t = (node.textContent || "").trim();
-    if (t) parts.push(t);
-  }
-
-  let text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
-  text = text.replace(/^[·\-–—]+\s*/, "").replace(/\s*[·\-–—]+$/, "").trim();
-  return text;
+/** Clean up text by removing extra spaces and bullet characters */
+function cleanCommentText(text: string): string {
+  let cleaned = text.replace(/\s{2,}/g, " ").trim();
+  cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
+  return cleaned;
 }
 
-async function autoExpandComments(container: Element, maxClicks = 6): Promise<void> {
-  const EXPAND_BUTTON_RE =
-    /(view\s*(more|previous)\s*comment|view\s*\d+\s*(more\s*)?repl|আরও\s*মন্তব্য|পূর্ববর্তী\s*মন্তব্য|উত্তর\s*দেখুন)/i;
+/**
+ * Recursively extracts text and emojis from an element.
+ * Reads text nodes and img[alt] (Facebook renders emojis as <img alt="😍">).
+ */
+function extractNodeTextWithEmojis(node: Node, authorName: string): string {
+  let result = "";
 
-  for (let i = 0; i < maxClicks; i++) {
+  function walk(cur: Node) {
+    if (cur.nodeType === Node.TEXT_NODE) {
+      const val = cur.textContent || "";
+      result += val;
+      return;
+    }
+
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      const el = cur as HTMLElement;
+      const tag = el.tagName;
+      const role = (el.getAttribute("role") || "").toLowerCase();
+
+      if (tag === "BUTTON" || role === "button") return;
+      if (tag === "BR") {
+        result += "\n";
+        return;
+      }
+
+      if (tag === "IMG") {
+        const alt = (el.getAttribute("alt") || "").trim();
+        const isAvatar =
+          alt.toLowerCase().includes("profile picture") ||
+          alt.toLowerCase().includes("প্রোফাইল") ||
+          alt === authorName ||
+          el.closest("a")?.textContent?.trim() === authorName;
+        if (!isAvatar && alt) {
+          result += " " + alt + " ";
+        }
+        return;
+      }
+
+      const aria = (el.getAttribute("aria-label") || "").trim();
+      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+        result += " " + aria + " ";
+        return;
+      }
+
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        walk(child);
+      }
+    }
+  }
+
+  walk(node);
+  return result;
+}
+
+/** Fallback extraction walking the entire bubble when dir="auto" isn't found */
+function extractFallbackTextWithEmojis(
+  commentRoot: Element,
+  authorName: string,
+  authorLink?: HTMLAnchorElement | null
+): string {
+  let result = "";
+
+  function walk(cur: Node) {
+    if (cur.nodeType === Node.TEXT_NODE) {
+      const val = (cur.textContent || "").trim();
+      if (val && val !== authorName && !UI_TEXT_CLEAN_RE.test(val)) {
+        result += " " + val + " ";
+      }
+      return;
+    }
+
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      const el = cur as HTMLElement;
+      const tag = el.tagName;
+      const role = (el.getAttribute("role") || "").toLowerCase();
+
+      if (tag === "BUTTON" || role === "button") return;
+      if (authorLink && (el === authorLink || authorLink.contains(el))) return;
+
+      if (tag === "A") {
+        const linkText = (el.textContent || "").trim();
+        if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return;
+      }
+
+      const nestedArt = el.closest('[role="article"]');
+      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+
+      if (tag === "BR") {
+        result += "\n";
+        return;
+      }
+
+      if (tag === "IMG") {
+        const alt = (el.getAttribute("alt") || "").trim();
+        const isAvatar =
+          alt.toLowerCase().includes("profile picture") ||
+          alt.toLowerCase().includes("প্রোফাইল") ||
+          alt === authorName ||
+          el.closest("a")?.textContent?.trim() === authorName;
+        if (!isAvatar && alt) {
+          result += " " + alt + " ";
+        }
+        return;
+      }
+
+      const aria = (el.getAttribute("aria-label") || "").trim();
+      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+        result += " " + aria + " ";
+        return;
+      }
+
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        walk(child);
+      }
+    }
+  }
+
+  walk(commentRoot);
+  return result;
+}
+
+/**
+ * Extract comment text + emojis preserving exact formatting, without author name or UI text.
+ */
+function extractCommentTextContent(
+  commentRoot: Element,
+  authorName: string,
+  authorLink?: HTMLAnchorElement | null
+): string {
+  // Strategy 1: Find [dir="auto"] containers inside the comment bubble
+  const dirElements = commentRoot.querySelectorAll<HTMLElement>('[dir="auto"]');
+  const textCandidates: HTMLElement[] = [];
+
+  for (const dirEl of dirElements) {
+    if (authorLink && (authorLink.contains(dirEl) || dirEl.contains(authorLink))) continue;
+
+    const t = (dirEl.textContent || "").trim();
+    if (t === authorName || UI_TEXT_CLEAN_RE.test(t)) continue;
+    if (dirEl.closest('button, [role="button"]') !== null) continue;
+
+    const nestedArt = dirEl.closest('[role="article"]');
+    if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+
+    const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
+    if (!isChildOfCandidate) {
+      textCandidates.push(dirEl);
+    }
+  }
+
+  if (textCandidates.length > 0) {
+    const parts: string[] = [];
+    for (const container of textCandidates) {
+      const str = extractNodeTextWithEmojis(container, authorName);
+      if (str) parts.push(str);
+    }
+    const combined = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+    if (combined) {
+      return cleanCommentText(combined);
+    }
+  }
+
+  // Strategy 2: Fallback
+  return cleanCommentText(extractFallbackTextWithEmojis(commentRoot, authorName, authorLink));
+}
+
+/**
+ * Find the best author link and author name in a comment element.
+ * Prioritizes links with text content or non-empty avatar alt.
+ */
+function findBestAuthor(root: Element): { link: HTMLAnchorElement | null; name: string; path: string } {
+  let bestLink: HTMLAnchorElement | null = null;
+  let bestName = "";
+  let bestPath = "";
+
+  for (const a of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    const path = profilePathFromHref(a.getAttribute("href") || "");
+    if (!path) continue;
+
+    const textContent = (a.textContent || "").trim();
+    const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
+    const ariaLabel = (a.getAttribute("aria-label") || "").trim();
+
+    let name = textContent;
+    if (!name || UI_TEXT_CLEAN_RE.test(name)) name = imgAlt;
+    if (!name || UI_TEXT_CLEAN_RE.test(name)) name = ariaLabel;
+
+    name = name
+      .replace(/^(profile picture of|avatar of|প্রোফাইল ছবি|profile photo of)\s*/i, "")
+      .trim();
+
+    if (name && !UI_TEXT_CLEAN_RE.test(name)) {
+      bestLink = a;
+      bestName = name;
+      bestPath = path;
+      break;
+    }
+
+    if (!bestLink) {
+      bestLink = a;
+      bestPath = path;
+    }
+  }
+
+  if (!bestName && bestLink) {
+    const heading = root.querySelector("h3, h4, strong");
+    if (heading) {
+      const hText = (heading.textContent || "").trim();
+      if (hText && !UI_TEXT_CLEAN_RE.test(hText)) bestName = hText;
+    }
+  }
+
+  if (!bestName && bestPath) {
+    const cleanSlug = bestPath.replace(/^\/+|\/+$/g, "").replace(/^profile\.php\?id=/, "");
+    bestName = cleanSlug || "Facebook User";
+  }
+
+  return { link: bestLink, name: bestName, path: bestPath };
+}
+
+async function autoExpandComments(container: Element, maxPasses = 8): Promise<void> {
+  const EXPAND_BUTTON_RE =
+    /(view\s*(all|\d+|more|previous)?\s*(more\s*)?(comment|repl)|(most\s+relevant)|আরও\s*\d*\s*মন্তব্য|পূর্ববর্তী\s*মন্তব্য|উত্তর\s*দেখুন|\d+\s*টি\s*উত্তর|সব\s*মন্তব্য)/i;
+
+  for (let pass = 0; pass < maxPasses; pass++) {
     const buttons = container.querySelectorAll<HTMLElement>('[role="button"], button');
-    let clickedAny = false;
+    let clickedCount = 0;
 
     for (const b of buttons) {
       const text = (b.getAttribute("aria-label") || b.textContent || "").trim();
       if (EXPAND_BUTTON_RE.test(text)) {
         b.scrollIntoView({ behavior: "instant", block: "nearest" });
         b.click();
-        clickedAny = true;
-        await sleep(650);
-        break;
+        clickedCount++;
+        await sleep(500);
+        if (clickedCount >= 4) break;
       }
     }
 
-    if (!clickedAny) break;
+    if (clickedCount === 0) break;
+    await sleep(600);
   }
 }
 
@@ -1257,25 +1512,37 @@ function sameProfile(a: string, b: string): boolean {
 
 async function scanPostComments(
   autoExpand = true,
-  maxExpandClicks = 6
+  maxExpandClicks = 8
 ): Promise<ScanCommentsResponse> {
   try {
     let postContainer: HTMLElement = document.body;
-    const articles = document.querySelectorAll<HTMLElement>('[role="article"]');
-    if (articles.length > 1) {
-      const vMid = window.innerHeight / 2;
-      let closest: HTMLElement | null = null;
-      let minDistance = Infinity;
-      for (const art of articles) {
-        if (art.parentElement?.closest('[role="article"]')) continue;
-        const rect = art.getBoundingClientRect();
-        const dist = Math.abs(rect.top + rect.height / 2 - vMid);
-        if (dist < minDistance) {
-          minDistance = dist;
-          closest = art;
+
+    // Check if post is opened in a modal dialog overlay
+    const modalDialog = document.querySelector<HTMLElement>('div[role="dialog"]');
+    if (
+      modalDialog &&
+      modalDialog.querySelector(
+        '[role="article"], [aria-label*="comment" i], [aria-label*="মন্তব্য" i], [role="button"], form'
+      )
+    ) {
+      postContainer = modalDialog;
+    } else {
+      const articles = document.querySelectorAll<HTMLElement>('[role="article"]');
+      if (articles.length > 1) {
+        const vMid = window.innerHeight / 2;
+        let closest: HTMLElement | null = null;
+        let minDistance = Infinity;
+        for (const art of articles) {
+          if (art.parentElement?.closest('[role="article"]')) continue;
+          const rect = art.getBoundingClientRect();
+          const dist = Math.abs(rect.top + rect.height / 2 - vMid);
+          if (dist < minDistance) {
+            minDistance = dist;
+            closest = art;
+          }
         }
+        if (closest) postContainer = closest;
       }
-      if (closest) postContainer = closest;
     }
 
     const postUrl = extractPostUrlFromPage(postContainer);
@@ -1286,8 +1553,16 @@ async function scanPostComments(
     }
 
     const candidateRoots = new Set<Element>();
-    const actionNodes = postContainer.querySelectorAll<HTMLElement>('[role="button"], [aria-label]');
 
+    // 1. All articles inside postContainer (excluding postContainer itself)
+    for (const art of postContainer.querySelectorAll<HTMLElement>('[role="article"]')) {
+      if (art !== postContainer) {
+        candidateRoots.add(art);
+      }
+    }
+
+    // 2. Action buttons (Like, Reply, etc.)
+    const actionNodes = postContainer.querySelectorAll<HTMLElement>('[role="button"], [aria-label]');
     for (const el of actionNodes) {
       const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
       const text = (el.textContent || "").trim().toLowerCase();
@@ -1299,14 +1574,28 @@ async function scanPostComments(
 
       if (!isAction) continue;
 
+      const closestArt = el.closest('[role="article"]');
+      if (closestArt && closestArt !== postContainer && postContainer.contains(closestArt)) {
+        candidateRoots.add(closestArt);
+        continue;
+      }
+
+      // Walk up until an ancestor contains a valid author profile link
       let candidate: Element | null = el.parentElement;
-      for (let depth = 0; depth < 10 && candidate && candidate !== postContainer; depth++) {
+      for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
         const cText = (candidate.textContent || "").trim();
         if (cText.length === 0 || cText.length > 2500) {
           candidate = candidate.parentElement;
           continue;
         }
-        if (candidate.querySelector("a[href]") !== null) {
+        let hasAuthor = false;
+        for (const a of candidate.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+          if (profilePathFromHref(a.getAttribute("href") || "")) {
+            hasAuthor = true;
+            break;
+          }
+        }
+        if (hasAuthor) {
           candidateRoots.add(candidate);
           break;
         }
@@ -1314,42 +1603,19 @@ async function scanPostComments(
       }
     }
 
-    for (const art of postContainer.querySelectorAll<HTMLElement>('[role="article"]')) {
-      if (art !== postContainer) {
-        candidateRoots.add(art);
-      }
-    }
-
     const comments: ScannedPostComment[] = [];
     const seenIds = new Set<string>();
 
     for (const root of candidateRoots) {
-      let authorLink: HTMLAnchorElement | null = null;
-      for (const a of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-        const path = profilePathFromHref(a.getAttribute("href") || "");
-        if (path) {
-          authorLink = a;
-          break;
-        }
-      }
+      const author = findBestAuthor(root);
+      if (!author.link || !author.path) continue;
 
-      if (!authorLink) continue;
-
-      const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
-      const authorName = (
-        authorLink.querySelector("img")?.getAttribute("alt") ||
-        authorLink.textContent ||
-        ""
-      ).trim();
-
-      if (!authorName) continue;
-
-      const text = extractCommentTextContent(root, authorName);
+      const text = extractCommentTextContent(root, author.name, author.link);
       if (!text) continue;
 
       const commentDate = extractCommentDate(root);
       const commentId = extractCommentId(root);
-      const uniqueId = makeCommentId(postUrl, text, authorPath || authorName);
+      const uniqueId = makeCommentId(postUrl, text, author.path || author.name, commentId);
 
       if (seenIds.has(uniqueId)) continue;
       seenIds.add(uniqueId);
@@ -1359,15 +1625,15 @@ async function scanPostComments(
         (root.parentElement?.closest('[role="article"]') !== null &&
           root.parentElement?.closest('[role="article"]') !== postContainer);
 
-      const isMy = myId ? sameProfile(authorPath, myId) : false;
+      const isMy = myId ? sameProfile(author.path, myId) : false;
 
       comments.push({
         id: uniqueId,
         text,
         postUrl,
-        authorName,
-        authorProfileUrl: authorLink.href,
-        authorId: authorPath,
+        authorName: author.name,
+        authorProfileUrl: author.link.href,
+        authorId: author.path,
         commentDate,
         commentId,
         isReply,

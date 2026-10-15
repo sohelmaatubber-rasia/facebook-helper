@@ -378,6 +378,21 @@ ${job.failed || 0} failed`;
           return;
         }
       }
+      for (const img of document.querySelectorAll("img[alt]")) {
+        const alt = (img.getAttribute("alt") || "").toLowerCase();
+        if (alt && (alt.includes(trimmed) || trimmed.includes(alt))) {
+          const parent = img.closest('[role="article"], div[dir="auto"]') || img.parentElement;
+          if (!parent) continue;
+          parent.scrollIntoView({ behavior: "smooth", block: "center" });
+          const prev = parent.style.cssText;
+          parent.style.cssText += ";outline:3px solid #1877f2;border-radius:3px;background:#e7f3ff;transition:all 0.5s;";
+          setTimeout(() => {
+            parent.style.cssText = prev;
+          }, 3e3);
+          showBanner("\u2713 Comment located and highlighted.", false);
+          return;
+        }
+      }
       elapsed += STEP_MS;
       setTimeout(attempt, STEP_MS);
     }

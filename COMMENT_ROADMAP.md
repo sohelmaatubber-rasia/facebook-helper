@@ -43,22 +43,23 @@ This document outlines the architectural breakdown, milestones, and step-by-step
 
 ### **Part 1: Post-Wide On-Demand Comment Scanner**
 *Goal: Allow the user to scan and list all comments on the currently opened post, not just their own.*
-*Status: `COMPLETED`*
+*Status: `COMPLETED & ENHANCED`*
 
 - [x] **1.1: On-demand Scan Trigger:**
   - Add a **"Scan Post Comments"** button in `popup.html`.
+  - Works across tabs via `getFacebookTab()`, even when user is on another browser tab.
   - Sends a `SCAN_POST_COMMENTS` message to `content.ts`.
 - [x] **1.2: DOM Traversal for Post Comments:**
-  - Identify the active post container (article, feed unit, or modal).
-  - Extract all comment nodes including:
-    - Comment ID & Permalinks
-    - Author Name & Profile Link
-    - Comment Text Content
-    - Timestamp & Relative Date
-    - Parent Comment ID (detect replies vs top-level comments)
+  - Priority detection for open modal dialogs (`div[role="dialog"]`) and inline feed articles.
+  - Traverse beyond action rows up to true comment root bubbles with valid author links.
+  - Decodes and supports international Unicode author slugs (Arabic, Bengali, numeric IDs, etc.).
+  - Extracts full comment content including emojis (`<img alt="😍">`, emoji spans, and native Unicode).
+  - Extract Comment ID (`?comment_id=...` or `data-commentid`) & Permalinks.
+  - Parent Comment ID & reply badge detection (`isReply`).
+  - 64-bit multi-round integer hashing to guarantee zero ID collisions for Unicode and emoji comments.
 - [x] **1.3: Auto-Expansion of Hidden Comments:**
-  - Support clicking "View more comments" / "View previous comments" / "X replies" up to a configurable depth limit.
-  - Progress reporting and instant saving to background storage.
+  - Multi-pass batch expansion for "View more comments", "View previous comments", "X replies", and Bengali equivalents.
+  - Instant deduplication and saving to background storage.
 
 ---
 

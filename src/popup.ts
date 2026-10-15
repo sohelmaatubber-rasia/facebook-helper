@@ -481,6 +481,21 @@ function locateCommentOnPage(targetText: string): void {
       }
     }
 
+    // Check img[alt] for emoji comments
+    for (const img of document.querySelectorAll<HTMLImageElement>("img[alt]")) {
+      const alt = (img.getAttribute("alt") || "").toLowerCase();
+      if (alt && (alt.includes(trimmed) || trimmed.includes(alt))) {
+        const parent = img.closest<HTMLElement>('[role="article"], div[dir="auto"]') || img.parentElement;
+        if (!parent) continue;
+        parent.scrollIntoView({ behavior: "smooth", block: "center" });
+        const prev = parent.style.cssText;
+        parent.style.cssText += ";outline:3px solid #1877f2;border-radius:3px;background:#e7f3ff;transition:all 0.5s;";
+        setTimeout(() => { parent.style.cssText = prev; }, 3000);
+        showBanner("✓ Comment located and highlighted.", false);
+        return;
+      }
+    }
+
     elapsed += STEP_MS;
     setTimeout(attempt, STEP_MS);
   }

@@ -248,14 +248,25 @@ async function startDirect(urls: string[]): Promise<StartResponse> {
 const COMMENTS_KEY = "fb_comments";
 const MAX_COMMENTS = 1000;
 
-/** Build a stable dedup ID matching the logic in comment-scanner.ts. */
-function makeCommentId(postUrl: string, text: string, authorId: string): string {
-  const raw = `${authorId}|${postUrl}|${text.slice(0, 150)}`;
-  try {
-    return btoa(unescape(encodeURIComponent(raw)));
-  } catch (_) {
-    return btoa(raw.replace(/[^\x00-\x7F]/g, "?"));
+/** 64-bit multi-round integer hash: completely immune to Unicode/emoji crashes and collisions */
+function hashString(str: string): string {
+  let h1 = 0xdeadbeef, h2 = 0x41c64e6d;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
   }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** Build a stable dedup ID matching the logic in content.ts. */
+function makeCommentId(postUrl: string, text: string, authorId: string, commentId?: string): string {
+  if (commentId) return `fb_${commentId}`;
+  return `cid_${hashString(`${authorId}|${postUrl}|${text}`)}`;
 }
 
 async function getComments(): Promise<SavedComment[]> {
@@ -264,7 +275,7 @@ async function getComments(): Promise<SavedComment[]> {
 }
 
 async function saveComment(comment: Omit<SavedComment, "id" | "savedAt">): Promise<void> {
-  const id = makeCommentId(comment.postUrl, comment.text, comment.authorId);
+  const id = makeCommentId(comment.postUrl, comment.text, comment.authorId, comment.commentId);
   const existing = await getComments();
 
   // Deduplicate: if we already have this comment, skip.
@@ -282,7 +293,7 @@ async function saveMultipleComments(comments: Omit<SavedComment, "id" | "savedAt
   const newComments: SavedComment[] = [];
 
   for (const c of comments) {
-    const id = makeCommentId(c.postUrl, c.text, c.authorId || c.authorName);
+    const id = makeCommentId(c.postUrl, c.text, c.authorId || c.authorName, c.commentId);
     if (!existingIds.has(id)) {
       existingIds.add(id);
       newComments.push({ ...c, id, savedAt: Date.now() });

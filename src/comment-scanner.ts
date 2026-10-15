@@ -37,7 +37,8 @@ import type { CommentMessage } from "./types";
 const STORAGE_KEY = "fb_comments"; // referenced only for clarity; not used here
 
 /** Profile links that are obviously NOT a user (pages, groups, system paths). */
-const NON_USER_PATH_RE = /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about)\b/i;
+const NON_USER_PATH_RE =
+  /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about|photo|photos|posts|stories|reel|reels|share|permalink|login|messages|notifications|bookmarks|friends)\b/i;
 
 /** Recognise a Facebook profile link by its href. */
 const PROFILE_HREF_RE = /^https?:\/\/(?:www\.)?facebook\.com\/(?:profile\.php|people\/[^/]+\/\d+|[a-zA-Z0-9][a-zA-Z0-9._-]*)(?:[/?#]|$)/;
@@ -46,7 +47,8 @@ const PROFILE_HREF_RE = /^https?:\/\/(?:www\.)?facebook\.com\/(?:profile\.php|pe
 const POST_HREF_RE = /\/(?:posts|permalink|story\.php|(?:photo|reel)\/|\d{10,}\/posts\/|share\/p\/)|\?story_fbid=/;
 
 /** Text patterns that indicate a UI action rather than comment content. */
-const UI_TEXT_RE = /^(like|reply|share|see\s+translation|edit|delete|hide|report|more|·|\d+[smhdwy]|\d+\s*(second|minute|hour|day|week|month|year)s?\s*(ago)?)$/i;
+const UI_TEXT_RE =
+  /^(like|reply|share|see\s+translation|edit|delete|hide|report|more|·|\d+[smhdwy]|\d+\s*(second|minute|hour|day|week|month|year)s?\s*(ago)?|পছন্দ\s*করুন|উত্তর\s*দিন|শেয়ার\s*করুন)$/i;
 
 // ------------------------------------------------------------------ profile ID cache
 
@@ -58,33 +60,41 @@ let myProfileName = "";
 
 /**
  * Given an anchor's href, return the canonical profile path or "" if not a
- * user profile link.  Examples:
- *   "https://www.facebook.com/sohel.ahmed.384091" → "/sohel.ahmed.384091"
- *   "https://www.facebook.com/profile.php?id=123"  → "/profile.php?id=123"
- *   "https://www.facebook.com/groups/xyz"           → ""  (not a user)
+ * user profile link. Examples:
+ *   "https://www.facebook.com/sohel.ahmed.384091" -> "/sohel.ahmed.384091"
+ *   "https://www.facebook.com/profile.php?id=123"  -> "/profile.php?id=123"
+ *   "https://www.facebook.com/people/Name/123"     -> "/profile.php?id=123"
+ *   "https://www.facebook.com/groups/xyz"          -> ""  (not a user)
  */
 function profilePathFromHref(href: string): string {
   if (!href) return "";
   try {
     const u = new URL(href, location.href);
     if (u.hostname !== "www.facebook.com" && !u.hostname.endsWith(".facebook.com")) return "";
-    if (NON_USER_PATH_RE.test(u.pathname)) return "";
 
-    if (u.pathname === "/profile.php") {
+    let pathname = u.pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch (_) {}
+
+    if (NON_USER_PATH_RE.test(pathname)) return "";
+
+    // /profile.php?id=123456
+    if (pathname === "/profile.php") {
       const id = u.searchParams.get("id");
       return id ? `/profile.php?id=${id}` : "";
     }
 
-    // /people/Name/12345
-    const peopleM = u.pathname.match(/^\/people\/[^/]+\/(\d+)/);
+    // /people/username/123456 or /people/unicode-name/123456
+    const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
     if (peopleM) return `/profile.php?id=${peopleM[1]}`;
 
-    // /<username> — must not be a system path
-    const slugM = u.pathname.match(/^\/([a-zA-Z0-9][a-zA-Z0-9._-]*)(?:\/.*)?$/);
-    if (slugM) {
-      const slug = slugM[1];
-      if (NON_USER_PATH_RE.test(`/${slug}`)) return "";
-      return `/${slug}`;
+    // Extract first segment after /
+    const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
+    const firstSegment = segments[0];
+
+    if (firstSegment && !NON_USER_PATH_RE.test(`/${firstSegment}`)) {
+      return `/${firstSegment}`;
     }
   } catch (_) {
     /* ignore */
@@ -195,66 +205,218 @@ function resolveMyProfileId(): string | null {
 
 // ------------------------------------------------------------------ comment text extraction
 
-/**
- * Extract just the comment text from a comment element, excluding:
- *   - The author's name
- *   - Timestamps
- *   - Button labels (Like, Reply, Share, etc.)
- *   - Any text inside <a> links (except if the whole comment IS a link post)
- *
- * Uses a TreeWalker so it works regardless of nesting depth.
- */
-function extractCommentText(commentRoot: Element, authorLink: HTMLAnchorElement): string {
-  const authorName = (authorLink.textContent || "").trim();
-  const parts: string[] = [];
+function cleanCommentText(text: string): string {
+  let cleaned = text.replace(/\s{2,}/g, " ").trim();
+  cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
+  return cleaned;
+}
 
-  const walker = document.createTreeWalker(commentRoot, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node): number => {
-      const text = (node.textContent || "").trim();
-      if (!text) return NodeFilter.FILTER_REJECT;
+function extractNodeTextWithEmojis(node: Node, authorName: string): string {
+  let result = "";
 
-      // Walk up to check ancestors within the comment root
-      let el: Element | null = node.parentElement;
-      while (el && el !== commentRoot) {
-        const tag = el.tagName;
-        const role = (el.getAttribute("role") || "").toLowerCase();
-        // Reject text inside buttons or click targets
-        if (tag === "BUTTON" || role === "button") return NodeFilter.FILTER_REJECT;
-        // Reject text inside links UNLESS this link is the entire comment
-        if (tag === "A") {
-          // Keep if the link's textContent IS substantially the comment (self-link to post, etc.)
-          // Reject if it's the author name link or a navigation link
-          const linkText = (el.textContent || "").trim();
-          if (linkText === authorName) return NodeFilter.FILTER_REJECT;
-          // Keep inline links that are part of comment text (e.g. "@mention" style)
-          // Reject if the link looks like a UI action (see translation, etc.)
-          if (UI_TEXT_RE.test(linkText)) return NodeFilter.FILTER_REJECT;
-        }
-        el = el.parentElement;
+  function walk(cur: Node) {
+    if (cur.nodeType === Node.TEXT_NODE) {
+      const val = cur.textContent || "";
+      result += val;
+      return;
+    }
+
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      const el = cur as HTMLElement;
+      const tag = el.tagName;
+      const role = (el.getAttribute("role") || "").toLowerCase();
+
+      if (tag === "BUTTON" || role === "button") return;
+      if (tag === "BR") {
+        result += "\n";
+        return;
       }
 
-      // Reject common UI strings
-      if (UI_TEXT_RE.test(text)) return NodeFilter.FILTER_REJECT;
-      // Reject the author name itself
-      if (text === authorName) return NodeFilter.FILTER_REJECT;
+      if (tag === "IMG") {
+        const alt = (el.getAttribute("alt") || "").trim();
+        const isAvatar =
+          alt.toLowerCase().includes("profile picture") ||
+          alt.toLowerCase().includes("প্রোফাইল") ||
+          alt === authorName ||
+          el.closest("a")?.textContent?.trim() === authorName;
+        if (!isAvatar && alt) {
+          result += " " + alt + " ";
+        }
+        return;
+      }
 
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
+      const aria = (el.getAttribute("aria-label") || "").trim();
+      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+        result += " " + aria + " ";
+        return;
+      }
 
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const t = (node.textContent || "").trim();
-    if (t) parts.push(t);
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        walk(child);
+      }
+    }
   }
 
-  // Join with spaces (TreeWalker returns individual text nodes which may lack whitespace)
-  let text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+  walk(node);
+  return result;
+}
 
-  // Remove trailing/leading dots and bullets
-  text = text.replace(/^[·\-–—]+\s*/, "").replace(/\s*[·\-–—]+$/, "").trim();
+function extractFallbackTextWithEmojis(
+  commentRoot: Element,
+  authorName: string,
+  authorLink?: HTMLAnchorElement | null
+): string {
+  let result = "";
 
-  return text;
+  function walk(cur: Node) {
+    if (cur.nodeType === Node.TEXT_NODE) {
+      const val = (cur.textContent || "").trim();
+      if (val && val !== authorName && !UI_TEXT_RE.test(val)) {
+        result += " " + val + " ";
+      }
+      return;
+    }
+
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      const el = cur as HTMLElement;
+      const tag = el.tagName;
+      const role = (el.getAttribute("role") || "").toLowerCase();
+
+      if (tag === "BUTTON" || role === "button") return;
+      if (authorLink && (el === authorLink || authorLink.contains(el))) return;
+
+      if (tag === "A") {
+        const linkText = (el.textContent || "").trim();
+        if (linkText === authorName || UI_TEXT_RE.test(linkText)) return;
+      }
+
+      const nestedArt = el.closest('[role="article"]');
+      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+
+      if (tag === "BR") {
+        result += "\n";
+        return;
+      }
+
+      if (tag === "IMG") {
+        const alt = (el.getAttribute("alt") || "").trim();
+        const isAvatar =
+          alt.toLowerCase().includes("profile picture") ||
+          alt.toLowerCase().includes("প্রোফাইল") ||
+          alt === authorName ||
+          el.closest("a")?.textContent?.trim() === authorName;
+        if (!isAvatar && alt) {
+          result += " " + alt + " ";
+        }
+        return;
+      }
+
+      const aria = (el.getAttribute("aria-label") || "").trim();
+      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+        result += " " + aria + " ";
+        return;
+      }
+
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        walk(child);
+      }
+    }
+  }
+
+  walk(commentRoot);
+  return result;
+}
+
+/**
+ * Extract just the comment text and emojis from a comment element.
+ */
+function extractCommentText(
+  commentRoot: Element,
+  authorName: string,
+  authorLink?: HTMLAnchorElement | null
+): string {
+  const dirElements = commentRoot.querySelectorAll<HTMLElement>('[dir="auto"]');
+  const textCandidates: HTMLElement[] = [];
+
+  for (const dirEl of dirElements) {
+    if (authorLink && (authorLink.contains(dirEl) || dirEl.contains(authorLink))) continue;
+
+    const t = (dirEl.textContent || "").trim();
+    if (t === authorName || UI_TEXT_RE.test(t)) continue;
+    if (dirEl.closest('button, [role="button"]') !== null) continue;
+
+    const nestedArt = dirEl.closest('[role="article"]');
+    if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+
+    const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
+    if (!isChildOfCandidate) {
+      textCandidates.push(dirEl);
+    }
+  }
+
+  if (textCandidates.length > 0) {
+    const parts: string[] = [];
+    for (const container of textCandidates) {
+      const str = extractNodeTextWithEmojis(container, authorName);
+      if (str) parts.push(str);
+    }
+    const combined = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+    if (combined) {
+      return cleanCommentText(combined);
+    }
+  }
+
+  return cleanCommentText(extractFallbackTextWithEmojis(commentRoot, authorName, authorLink));
+}
+
+function findBestAuthor(root: Element): { link: HTMLAnchorElement | null; name: string; path: string } {
+  let bestLink: HTMLAnchorElement | null = null;
+  let bestName = "";
+  let bestPath = "";
+
+  for (const a of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    const path = profilePathFromHref(a.getAttribute("href") || "");
+    if (!path) continue;
+
+    const textContent = (a.textContent || "").trim();
+    const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
+    const ariaLabel = (a.getAttribute("aria-label") || "").trim();
+
+    let name = textContent;
+    if (!name || UI_TEXT_RE.test(name)) name = imgAlt;
+    if (!name || UI_TEXT_RE.test(name)) name = ariaLabel;
+
+    name = name
+      .replace(/^(profile picture of|avatar of|প্রোফাইল ছবি|profile photo of)\s*/i, "")
+      .trim();
+
+    if (name && !UI_TEXT_RE.test(name)) {
+      bestLink = a;
+      bestName = name;
+      bestPath = path;
+      break;
+    }
+
+    if (!bestLink) {
+      bestLink = a;
+      bestPath = path;
+    }
+  }
+
+  if (!bestName && bestLink) {
+    const heading = root.querySelector("h3, h4, strong");
+    if (heading) {
+      const hText = (heading.textContent || "").trim();
+      if (hText && !UI_TEXT_RE.test(hText)) bestName = hText;
+    }
+  }
+
+  if (!bestName && bestPath) {
+    const cleanSlug = bestPath.replace(/^\/+|\/+$/g, "").replace(/^profile\.php\?id=/, "");
+    bestName = cleanSlug || "Facebook User";
+  }
+
+  return { link: bestLink, name: bestName, path: bestPath };
 }
 
 // ------------------------------------------------------------------ post URL
@@ -426,26 +588,13 @@ function tryProcessComment(el: Element): boolean {
     return false;
   }
 
-  // Find the first profile link inside this element
-  let authorLink: HTMLAnchorElement | null = null;
-  for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    const path = profilePathFromHref(a.getAttribute("href") || "");
-    if (path) { authorLink = a; break; }
-  }
-  if (!authorLink) return false;
+  const author = findBestAuthor(el);
+  if (!author.link || !author.path) return false;
 
-  const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
-  if (!authorPath) return false;
+  const isMyComment = myId ? sameProfile(author.path, myId) : false;
+  const text = extractCommentText(el, author.name, author.link);
 
-  // Determine if this comment was written by the logged-in user
-  const isMyComment = myId ? sameProfile(authorPath, myId) : false;
-
-  // Extract comment text (must be non-empty after cleaning)
-  const text = extractCommentText(el, authorLink);
-  const authorName = (authorLink.querySelector("img")?.getAttribute("alt") ||
-                      authorLink.textContent || (isMyComment ? myProfileName : "")).trim();
-
-  // Mark processed before the async send to prevent re-entry
+  // Mark processed before sending
   processed.add(el);
 
   if (!text) {
@@ -455,16 +604,20 @@ function tryProcessComment(el: Element): boolean {
   const postUrl = extractPostUrl(el);
   const commentDate = extractCommentDate(el);
   const commentId = extractCommentId(el);
+  const isReply =
+    el.closest('[role="group"]') !== null ||
+    (el.parentElement?.closest('[role="article"]') !== null);
 
   const payload: CommentMessage = {
     type: "SAVE_COMMENT",
     comment: {
       text,
       postUrl,
-      authorName: (isMyComment && myProfileName) ? myProfileName : (authorName || "Facebook User"),
-      authorId: authorPath,
-      authorProfileUrl: authorLink.href,
+      authorName: (isMyComment && myProfileName) ? myProfileName : (author.name || "Facebook User"),
+      authorId: author.path,
+      authorProfileUrl: author.link.href,
       isMyComment,
+      isReply,
       ...(commentDate ? { commentDate } : {}),
       ...(commentId ? { commentId } : {}),
     },

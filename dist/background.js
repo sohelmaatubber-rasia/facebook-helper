@@ -175,20 +175,29 @@
   }
   var COMMENTS_KEY = "fb_comments";
   var MAX_COMMENTS = 1e3;
-  function makeCommentId(postUrl, text, authorId) {
-    const raw = `${authorId}|${postUrl}|${text.slice(0, 150)}`;
-    try {
-      return btoa(unescape(encodeURIComponent(raw)));
-    } catch (_) {
-      return btoa(raw.replace(/[^\x00-\x7F]/g, "?"));
+  function hashString(str) {
+    let h1 = 3735928559, h2 = 1103515245;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
     }
+    h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507);
+    h1 ^= Math.imul(h2 ^ h2 >>> 13, 3266489909);
+    h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507);
+    h2 ^= Math.imul(h1 ^ h1 >>> 13, 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+  function makeCommentId(postUrl, text, authorId, commentId) {
+    if (commentId) return `fb_${commentId}`;
+    return `cid_${hashString(`${authorId}|${postUrl}|${text}`)}`;
   }
   async function getComments() {
     const result = await chrome.storage.local.get(COMMENTS_KEY);
     return result[COMMENTS_KEY] ?? [];
   }
   async function saveComment(comment) {
-    const id = makeCommentId(comment.postUrl, comment.text, comment.authorId);
+    const id = makeCommentId(comment.postUrl, comment.text, comment.authorId, comment.commentId);
     const existing = await getComments();
     if (existing.some((c) => c.id === id)) return;
     const saved = { ...comment, id, savedAt: Date.now() };
@@ -200,7 +209,7 @@
     const existingIds = new Set(existing.map((c) => c.id));
     const newComments = [];
     for (const c of comments) {
-      const id = makeCommentId(c.postUrl, c.text, c.authorId || c.authorName);
+      const id = makeCommentId(c.postUrl, c.text, c.authorId || c.authorName, c.commentId);
       if (!existingIds.has(id)) {
         existingIds.add(id);
         newComments.push({ ...c, id, savedAt: Date.now() });

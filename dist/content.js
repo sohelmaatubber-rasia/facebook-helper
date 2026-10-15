@@ -556,6 +556,21 @@
           return;
         }
       }
+      for (const img of document.querySelectorAll("img[alt]")) {
+        const alt = (img.getAttribute("alt") || "").toLowerCase();
+        if (alt && (alt.includes(trimmed) || trimmed.includes(alt))) {
+          const parent = img.closest('[role="article"], div[dir="auto"]') || img.parentElement;
+          if (!parent || (parent.textContent || "").length > 2e3) continue;
+          parent.scrollIntoView({ behavior: "smooth", block: "center" });
+          const prev = parent.style.cssText;
+          parent.style.cssText += ";outline:3px solid #1877f2;border-radius:3px;background:#e7f3ff;transition:all 0.5s;";
+          setTimeout(() => {
+            parent.style.cssText = prev;
+          }, 3e3);
+          showGotoBanner("\u2713 Comment found and highlighted.", false);
+          return;
+        }
+      }
       elapsed += STEP_MS;
       setTimeout(attempt, STEP_MS);
     }
@@ -617,6 +632,18 @@
       }
     }
     if (!targetEl) {
+      for (const img of document.querySelectorAll("img[alt]")) {
+        const alt = (img.getAttribute("alt") || "").toLowerCase();
+        if (alt && (alt.includes(normalizedTarget) || normalizedTarget.includes(alt))) {
+          const parent = img.closest('[role="article"]') || img.parentElement;
+          if (parent && (parent.textContent || "").length < 2e3) {
+            targetEl = parent;
+            break;
+          }
+        }
+      }
+    }
+    if (!targetEl) {
       const moreBtn = [...document.querySelectorAll('[role="button"]')].find(
         (n) => /view\s*(more|previous)\s*comment|আরও\s*মন্তব্য/i.test(n.textContent || "")
       );
@@ -632,6 +659,18 @@
             if (parent && (parent.textContent || "").length < 2e3) {
               targetEl = parent;
               break;
+            }
+          }
+        }
+        if (!targetEl) {
+          for (const img of document.querySelectorAll("img[alt]")) {
+            const alt = (img.getAttribute("alt") || "").toLowerCase();
+            if (alt && (alt.includes(normalizedTarget) || normalizedTarget.includes(alt))) {
+              const parent = img.closest('[role="article"]') || img.parentElement;
+              if (parent && (parent.textContent || "").length < 2e3) {
+                targetEl = parent;
+                break;
+              }
             }
           }
         }
@@ -746,7 +785,7 @@
     }
     return { ok: true };
   }
-  var NON_USER_PATH_RE = /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about)\b/i;
+  var NON_USER_PATH_RE = /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about|photo|photos|posts|stories|reel|reels|share|permalink|login|messages|notifications|bookmarks|friends)\b/i;
   var POST_HREF_RE = /\/(?:posts|permalink|story\.php|(?:photo|reel)\/|\d{10,}\/posts\/|share\/p\/)|\?story_fbid=/;
   var COMMENT_ACTION_LABEL_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
   var UI_TEXT_CLEAN_RE = /^(like|reply|share|see\s+translation|edit|delete|hide|report|more|·|\d+[smhdwy]|\d+\s*(second|minute|hour|day|week|month|year)s?\s*(ago)?|পছন্দ\s*করুন|উত্তর\s*দিন|শেয়ার\s*করুন)$/i;
@@ -755,30 +794,43 @@
     try {
       const u = new URL(href, location.href);
       if (u.hostname !== "www.facebook.com" && !u.hostname.endsWith(".facebook.com")) return "";
-      if (NON_USER_PATH_RE.test(u.pathname)) return "";
-      if (u.pathname === "/profile.php") {
+      let pathname = u.pathname;
+      try {
+        pathname = decodeURIComponent(pathname);
+      } catch (_) {
+      }
+      if (NON_USER_PATH_RE.test(pathname)) return "";
+      if (pathname === "/profile.php") {
         const id = u.searchParams.get("id");
         return id ? `/profile.php?id=${id}` : "";
       }
-      const peopleM = u.pathname.match(/^\/people\/[^/]+\/(\d+)/);
+      const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
       if (peopleM) return `/profile.php?id=${peopleM[1]}`;
-      const slugM = u.pathname.match(/^\/([a-zA-Z0-9][a-zA-Z0-9._-]*)(?:\/.*)?$/);
-      if (slugM) {
-        const slug = slugM[1];
-        if (NON_USER_PATH_RE.test(`/${slug}`)) return "";
-        return `/${slug}`;
+      const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
+      const firstSegment = segments[0];
+      if (firstSegment && !NON_USER_PATH_RE.test(`/${firstSegment}`)) {
+        return `/${firstSegment}`;
       }
     } catch (_) {
     }
     return "";
   }
-  function makeCommentId(postUrl, text, authorId) {
-    const raw = `${authorId}|${postUrl}|${text.slice(0, 150)}`;
-    try {
-      return btoa(unescape(encodeURIComponent(raw)));
-    } catch (_) {
-      return btoa(raw.replace(/[^\x00-\x7F]/g, "?"));
+  function hashString(str) {
+    let h1 = 3735928559, h2 = 1103515245;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
     }
+    h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507);
+    h1 ^= Math.imul(h2 ^ h2 >>> 13, 3266489909);
+    h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507);
+    h2 ^= Math.imul(h1 ^ h1 >>> 13, 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+  function makeCommentId(postUrl, text, authorId, commentId) {
+    if (commentId) return `fb_${commentId}`;
+    return `cid_${hashString(`${authorId}|${postUrl}|${text}`)}`;
   }
   function extractCommentId(el) {
     const byAttr = el.querySelector("[data-commentid]");
@@ -826,52 +878,179 @@
     }
     return location.href;
   }
-  function extractCommentTextContent(commentRoot, authorName) {
-    const parts = [];
-    const walker = document.createTreeWalker(commentRoot, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node2) => {
-        const text2 = (node2.textContent || "").trim();
-        if (!text2) return NodeFilter.FILTER_REJECT;
-        let el = node2.parentElement;
-        while (el && el !== commentRoot) {
-          const tag = el.tagName;
-          const role = (el.getAttribute("role") || "").toLowerCase();
-          if (tag === "BUTTON" || role === "button") return NodeFilter.FILTER_REJECT;
-          if (tag === "A") {
-            const linkText = (el.textContent || "").trim();
-            if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return NodeFilter.FILTER_REJECT;
-          }
-          el = el.parentElement;
-        }
-        if (UI_TEXT_CLEAN_RE.test(text2) || text2 === authorName) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-    let node;
-    while (node = walker.nextNode()) {
-      const t = (node.textContent || "").trim();
-      if (t) parts.push(t);
-    }
-    let text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
-    text = text.replace(/^[·\-–—]+\s*/, "").replace(/\s*[·\-–—]+$/, "").trim();
-    return text;
+  function cleanCommentText(text) {
+    let cleaned = text.replace(/\s{2,}/g, " ").trim();
+    cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
+    return cleaned;
   }
-  async function autoExpandComments(container, maxClicks = 6) {
-    const EXPAND_BUTTON_RE = /(view\s*(more|previous)\s*comment|view\s*\d+\s*(more\s*)?repl|আরও\s*মন্তব্য|পূর্ববর্তী\s*মন্তব্য|উত্তর\s*দেখুন)/i;
-    for (let i = 0; i < maxClicks; i++) {
+  function extractNodeTextWithEmojis(node, authorName) {
+    let result = "";
+    function walk(cur) {
+      if (cur.nodeType === Node.TEXT_NODE) {
+        const val = cur.textContent || "";
+        result += val;
+        return;
+      }
+      if (cur.nodeType === Node.ELEMENT_NODE) {
+        const el = cur;
+        const tag = el.tagName;
+        const role = (el.getAttribute("role") || "").toLowerCase();
+        if (tag === "BUTTON" || role === "button") return;
+        if (tag === "BR") {
+          result += "\n";
+          return;
+        }
+        if (tag === "IMG") {
+          const alt = (el.getAttribute("alt") || "").trim();
+          const isAvatar = alt.toLowerCase().includes("profile picture") || alt.toLowerCase().includes("\u09AA\u09CD\u09B0\u09CB\u09AB\u09BE\u0987\u09B2") || alt === authorName || el.closest("a")?.textContent?.trim() === authorName;
+          if (!isAvatar && alt) {
+            result += " " + alt + " ";
+          }
+          return;
+        }
+        const aria = (el.getAttribute("aria-label") || "").trim();
+        if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+          result += " " + aria + " ";
+          return;
+        }
+        for (let child = el.firstChild; child; child = child.nextSibling) {
+          walk(child);
+        }
+      }
+    }
+    walk(node);
+    return result;
+  }
+  function extractFallbackTextWithEmojis(commentRoot, authorName, authorLink) {
+    let result = "";
+    function walk(cur) {
+      if (cur.nodeType === Node.TEXT_NODE) {
+        const val = (cur.textContent || "").trim();
+        if (val && val !== authorName && !UI_TEXT_CLEAN_RE.test(val)) {
+          result += " " + val + " ";
+        }
+        return;
+      }
+      if (cur.nodeType === Node.ELEMENT_NODE) {
+        const el = cur;
+        const tag = el.tagName;
+        const role = (el.getAttribute("role") || "").toLowerCase();
+        if (tag === "BUTTON" || role === "button") return;
+        if (authorLink && (el === authorLink || authorLink.contains(el))) return;
+        if (tag === "A") {
+          const linkText = (el.textContent || "").trim();
+          if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return;
+        }
+        const nestedArt = el.closest('[role="article"]');
+        if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+        if (tag === "BR") {
+          result += "\n";
+          return;
+        }
+        if (tag === "IMG") {
+          const alt = (el.getAttribute("alt") || "").trim();
+          const isAvatar = alt.toLowerCase().includes("profile picture") || alt.toLowerCase().includes("\u09AA\u09CD\u09B0\u09CB\u09AB\u09BE\u0987\u09B2") || alt === authorName || el.closest("a")?.textContent?.trim() === authorName;
+          if (!isAvatar && alt) {
+            result += " " + alt + " ";
+          }
+          return;
+        }
+        const aria = (el.getAttribute("aria-label") || "").trim();
+        if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+          result += " " + aria + " ";
+          return;
+        }
+        for (let child = el.firstChild; child; child = child.nextSibling) {
+          walk(child);
+        }
+      }
+    }
+    walk(commentRoot);
+    return result;
+  }
+  function extractCommentTextContent(commentRoot, authorName, authorLink) {
+    const dirElements = commentRoot.querySelectorAll('[dir="auto"]');
+    const textCandidates = [];
+    for (const dirEl of dirElements) {
+      if (authorLink && (authorLink.contains(dirEl) || dirEl.contains(authorLink))) continue;
+      const t = (dirEl.textContent || "").trim();
+      if (t === authorName || UI_TEXT_CLEAN_RE.test(t)) continue;
+      if (dirEl.closest('button, [role="button"]') !== null) continue;
+      const nestedArt = dirEl.closest('[role="article"]');
+      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+      const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
+      if (!isChildOfCandidate) {
+        textCandidates.push(dirEl);
+      }
+    }
+    if (textCandidates.length > 0) {
+      const parts = [];
+      for (const container of textCandidates) {
+        const str = extractNodeTextWithEmojis(container, authorName);
+        if (str) parts.push(str);
+      }
+      const combined = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+      if (combined) {
+        return cleanCommentText(combined);
+      }
+    }
+    return cleanCommentText(extractFallbackTextWithEmojis(commentRoot, authorName, authorLink));
+  }
+  function findBestAuthor(root) {
+    let bestLink = null;
+    let bestName = "";
+    let bestPath = "";
+    for (const a of root.querySelectorAll("a[href]")) {
+      const path = profilePathFromHref(a.getAttribute("href") || "");
+      if (!path) continue;
+      const textContent = (a.textContent || "").trim();
+      const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
+      const ariaLabel = (a.getAttribute("aria-label") || "").trim();
+      let name = textContent;
+      if (!name || UI_TEXT_CLEAN_RE.test(name)) name = imgAlt;
+      if (!name || UI_TEXT_CLEAN_RE.test(name)) name = ariaLabel;
+      name = name.replace(/^(profile picture of|avatar of|প্রোফাইল ছবি|profile photo of)\s*/i, "").trim();
+      if (name && !UI_TEXT_CLEAN_RE.test(name)) {
+        bestLink = a;
+        bestName = name;
+        bestPath = path;
+        break;
+      }
+      if (!bestLink) {
+        bestLink = a;
+        bestPath = path;
+      }
+    }
+    if (!bestName && bestLink) {
+      const heading = root.querySelector("h3, h4, strong");
+      if (heading) {
+        const hText = (heading.textContent || "").trim();
+        if (hText && !UI_TEXT_CLEAN_RE.test(hText)) bestName = hText;
+      }
+    }
+    if (!bestName && bestPath) {
+      const cleanSlug = bestPath.replace(/^\/+|\/+$/g, "").replace(/^profile\.php\?id=/, "");
+      bestName = cleanSlug || "Facebook User";
+    }
+    return { link: bestLink, name: bestName, path: bestPath };
+  }
+  async function autoExpandComments(container, maxPasses = 8) {
+    const EXPAND_BUTTON_RE = /(view\s*(all|\d+|more|previous)?\s*(more\s*)?(comment|repl)|(most\s+relevant)|আরও\s*\d*\s*মন্তব্য|পূর্ববর্তী\s*মন্তব্য|উত্তর\s*দেখুন|\d+\s*টি\s*উত্তর|সব\s*মন্তব্য)/i;
+    for (let pass = 0; pass < maxPasses; pass++) {
       const buttons = container.querySelectorAll('[role="button"], button');
-      let clickedAny = false;
+      let clickedCount = 0;
       for (const b of buttons) {
         const text = (b.getAttribute("aria-label") || b.textContent || "").trim();
         if (EXPAND_BUTTON_RE.test(text)) {
           b.scrollIntoView({ behavior: "instant", block: "nearest" });
           b.click();
-          clickedAny = true;
-          await sleep(650);
-          break;
+          clickedCount++;
+          await sleep(500);
+          if (clickedCount >= 4) break;
         }
       }
-      if (!clickedAny) break;
+      if (clickedCount === 0) break;
+      await sleep(600);
     }
   }
   function resolveLoggedInUserId() {
@@ -905,24 +1084,31 @@
   function sameProfile(a, b) {
     return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
   }
-  async function scanPostComments(autoExpand = true, maxExpandClicks = 6) {
+  async function scanPostComments(autoExpand = true, maxExpandClicks = 8) {
     try {
       let postContainer = document.body;
-      const articles = document.querySelectorAll('[role="article"]');
-      if (articles.length > 1) {
-        const vMid = window.innerHeight / 2;
-        let closest = null;
-        let minDistance = Infinity;
-        for (const art of articles) {
-          if (art.parentElement?.closest('[role="article"]')) continue;
-          const rect = art.getBoundingClientRect();
-          const dist = Math.abs(rect.top + rect.height / 2 - vMid);
-          if (dist < minDistance) {
-            minDistance = dist;
-            closest = art;
+      const modalDialog = document.querySelector('div[role="dialog"]');
+      if (modalDialog && modalDialog.querySelector(
+        '[role="article"], [aria-label*="comment" i], [aria-label*="\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], [role="button"], form'
+      )) {
+        postContainer = modalDialog;
+      } else {
+        const articles = document.querySelectorAll('[role="article"]');
+        if (articles.length > 1) {
+          const vMid = window.innerHeight / 2;
+          let closest = null;
+          let minDistance = Infinity;
+          for (const art of articles) {
+            if (art.parentElement?.closest('[role="article"]')) continue;
+            const rect = art.getBoundingClientRect();
+            const dist = Math.abs(rect.top + rect.height / 2 - vMid);
+            if (dist < minDistance) {
+              minDistance = dist;
+              closest = art;
+            }
           }
+          if (closest) postContainer = closest;
         }
-        if (closest) postContainer = closest;
       }
       const postUrl = extractPostUrlFromPage(postContainer);
       const myId = resolveLoggedInUserId();
@@ -930,62 +1116,64 @@
         await autoExpandComments(postContainer, maxExpandClicks);
       }
       const candidateRoots = /* @__PURE__ */ new Set();
+      for (const art of postContainer.querySelectorAll('[role="article"]')) {
+        if (art !== postContainer) {
+          candidateRoots.add(art);
+        }
+      }
       const actionNodes = postContainer.querySelectorAll('[role="button"], [aria-label]');
       for (const el of actionNodes) {
         const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
         const text = (el.textContent || "").trim().toLowerCase();
         const isAction = COMMENT_ACTION_LABEL_RE.test(text) || COMMENT_ACTION_LABEL_RE.test(aria) || text === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || text === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8";
         if (!isAction) continue;
+        const closestArt = el.closest('[role="article"]');
+        if (closestArt && closestArt !== postContainer && postContainer.contains(closestArt)) {
+          candidateRoots.add(closestArt);
+          continue;
+        }
         let candidate = el.parentElement;
-        for (let depth = 0; depth < 10 && candidate && candidate !== postContainer; depth++) {
+        for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
           const cText = (candidate.textContent || "").trim();
           if (cText.length === 0 || cText.length > 2500) {
             candidate = candidate.parentElement;
             continue;
           }
-          if (candidate.querySelector("a[href]") !== null) {
+          let hasAuthor = false;
+          for (const a of candidate.querySelectorAll("a[href]")) {
+            if (profilePathFromHref(a.getAttribute("href") || "")) {
+              hasAuthor = true;
+              break;
+            }
+          }
+          if (hasAuthor) {
             candidateRoots.add(candidate);
             break;
           }
           candidate = candidate.parentElement;
         }
       }
-      for (const art of postContainer.querySelectorAll('[role="article"]')) {
-        if (art !== postContainer) {
-          candidateRoots.add(art);
-        }
-      }
       const comments = [];
       const seenIds = /* @__PURE__ */ new Set();
       for (const root of candidateRoots) {
-        let authorLink = null;
-        for (const a of root.querySelectorAll("a[href]")) {
-          const path = profilePathFromHref(a.getAttribute("href") || "");
-          if (path) {
-            authorLink = a;
-            break;
-          }
-        }
-        if (!authorLink) continue;
-        const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
-        const authorName = (authorLink.querySelector("img")?.getAttribute("alt") || authorLink.textContent || "").trim();
-        if (!authorName) continue;
-        const text = extractCommentTextContent(root, authorName);
+        const author = findBestAuthor(root);
+        if (!author.link || !author.path) continue;
+        const text = extractCommentTextContent(root, author.name, author.link);
         if (!text) continue;
         const commentDate = extractCommentDate(root);
         const commentId = extractCommentId(root);
-        const uniqueId = makeCommentId(postUrl, text, authorPath || authorName);
+        const uniqueId = makeCommentId(postUrl, text, author.path || author.name, commentId);
         if (seenIds.has(uniqueId)) continue;
         seenIds.add(uniqueId);
         const isReply = root.closest('[role="group"]') !== null || root.parentElement?.closest('[role="article"]') !== null && root.parentElement?.closest('[role="article"]') !== postContainer;
-        const isMy = myId ? sameProfile(authorPath, myId) : false;
+        const isMy = myId ? sameProfile(author.path, myId) : false;
         comments.push({
           id: uniqueId,
           text,
           postUrl,
-          authorName,
-          authorProfileUrl: authorLink.href,
-          authorId: authorPath,
+          authorName: author.name,
+          authorProfileUrl: author.link.href,
+          authorId: author.path,
           commentDate,
           commentId,
           isReply,
