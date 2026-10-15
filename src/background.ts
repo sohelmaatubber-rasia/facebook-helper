@@ -276,6 +276,26 @@ async function saveComment(comment: Omit<SavedComment, "id" | "savedAt">): Promi
   await chrome.storage.local.set({ [COMMENTS_KEY]: updated });
 }
 
+async function saveMultipleComments(comments: Omit<SavedComment, "id" | "savedAt">[]): Promise<number> {
+  const existing = await getComments();
+  const existingIds = new Set(existing.map((c) => c.id));
+  const newComments: SavedComment[] = [];
+
+  for (const c of comments) {
+    const id = makeCommentId(c.postUrl, c.text, c.authorId || c.authorName);
+    if (!existingIds.has(id)) {
+      existingIds.add(id);
+      newComments.push({ ...c, id, savedAt: Date.now() });
+    }
+  }
+
+  if (newComments.length === 0) return 0;
+
+  const updated = [...newComments, ...existing].slice(0, MAX_COMMENTS);
+  await chrome.storage.local.set({ [COMMENTS_KEY]: updated });
+  return newComments.length;
+}
+
 async function deleteComment(id: string): Promise<void> {
   const existing = await getComments();
   const updated = existing.filter((c) => c.id !== id);
@@ -426,6 +446,12 @@ chrome.runtime.onMessage.addListener(
       case "CLEAR_COMMENTS":
         clearComments()
           .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "SAVE_MULTIPLE_COMMENTS":
+        saveMultipleComments(message.comments)
+          .then((savedCount) => sendResponse({ ok: true, savedCount }))
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true;
     }

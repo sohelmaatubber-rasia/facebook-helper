@@ -255,6 +255,10 @@ ${job.failed || 0} failed`;
   tabPhotosBtn.addEventListener("click", () => switchTab("photos"));
   tabCommentsBtn.addEventListener("click", () => switchTab("comments"));
   var cmEl = {
+    scanBtn: $("cmScanPostBtn"),
+    autoExpand: $("cmAutoExpand"),
+    filterAll: $("cmFilterAll"),
+    filterMy: $("cmFilterMy"),
     search: $("cmSearch"),
     sort: $("cmSort"),
     list: $("cmList"),
@@ -263,6 +267,7 @@ ${job.failed || 0} failed`;
     clearAll: $("cmClearAll"),
     count: $("cmCount")
   };
+  var currentFilter = "all";
   var allComments = [];
   function sendToBackgroundCM(message) {
     return chrome.runtime.sendMessage(message);
@@ -271,6 +276,7 @@ ${job.failed || 0} failed`;
     cmEl.status.textContent = text;
     cmEl.status.hidden = !text;
     cmEl.status.classList.toggle("error", isError);
+    cmEl.status.classList.toggle("info", !isError);
   }
   function formatDate(ts) {
     const d = new Date(ts);
@@ -397,13 +403,19 @@ ${job.failed || 0} failed`;
   function renderComments() {
     const query = cmEl.search.value.trim().toLowerCase();
     const sort = cmEl.sort.value;
-    let list = query ? allComments.filter(
-      (c) => c.text.toLowerCase().includes(query) || c.postUrl.toLowerCase().includes(query)
-    ) : [...allComments];
+    let list = allComments;
+    if (currentFilter === "my") {
+      list = list.filter((c) => c.isMyComment);
+    }
+    if (query) {
+      list = list.filter(
+        (c) => c.text.toLowerCase().includes(query) || c.authorName && c.authorName.toLowerCase().includes(query) || c.postUrl.toLowerCase().includes(query)
+      );
+    }
     if (sort === "oldest") list = list.slice().reverse();
     cmEl.count.textContent = `${list.length} comment${list.length !== 1 ? "s" : ""}`;
     if (!list.length) {
-      cmEl.list.innerHTML = `<p class="cm-empty">${query ? "No comments match your search." : "No comments saved yet."}</p>`;
+      cmEl.list.innerHTML = `<p class="cm-empty">${query ? "No comments match your search." : currentFilter === "my" ? "No personal comments found yet." : "No comments found. Click 'Scan Post Comments' on a Facebook post!"}</p>`;
       return;
     }
     cmEl.list.innerHTML = "";
@@ -414,6 +426,11 @@ ${job.failed || 0} failed`;
       card.dataset.id = comment.id;
       const dateStr = comment.commentDate ? `${comment.commentDate} \xB7 saved ${formatDate(comment.savedAt)}` : `Saved ${formatDate(comment.savedAt)}`;
       card.innerHTML = `
+      <div class="cm-card-header">
+        <strong class="cm-card-author">${escapeHtml(comment.authorName || "Facebook User")}</strong>
+        ${comment.isReply ? `<span class="cm-badge-reply">Reply</span>` : ""}
+        ${comment.isMyComment ? `<span class="cm-badge-my">You</span>` : ""}
+      </div>
       <p class="cm-card-text">${escapeHtml(comment.text)}</p>
       <p class="cm-card-meta">${escapeHtml(dateStr)}<br>
         <a href="${escapeHtml(comment.postUrl)}" target="_blank" title="${escapeHtml(comment.postUrl)}"
@@ -435,6 +452,55 @@ ${job.failed || 0} failed`;
       frag.appendChild(card);
     }
     cmEl.list.appendChild(frag);
+  }
+  async function scanPostCommentsAction() {
+    setCmStatus("");
+    const tab = await getFacebookTab();
+    if (!tab?.id) {
+      setCmStatus("Open a Facebook page or post in the active tab first.", true);
+      return;
+    }
+    cmEl.scanBtn.disabled = true;
+    const origText = cmEl.scanBtn.textContent || "\u{1F4E5} Scan Post Comments";
+    cmEl.scanBtn.textContent = "Scanning comments...";
+    setCmStatus("Injecting scanner & analyzing comments...", false);
+    try {
+      await inject(tab);
+      const autoExpand = cmEl.autoExpand.checked;
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        type: "SCAN_POST_COMMENTS",
+        autoExpand,
+        maxExpandClicks: 8
+      });
+      if (!res?.ok) {
+        setCmStatus(`Scan failed: ${res?.error || "Unknown error"}`, true);
+        return;
+      }
+      if (!res.comments || res.comments.length === 0) {
+        setCmStatus("No comments found on this post. (Scroll to comments section and retry).", true);
+        return;
+      }
+      const toSave = res.comments.map((c) => ({
+        text: c.text,
+        postUrl: c.postUrl,
+        authorName: c.authorName,
+        authorId: c.authorId || c.authorName,
+        authorProfileUrl: c.authorProfileUrl,
+        commentDate: c.commentDate,
+        commentId: c.commentId,
+        isReply: c.isReply,
+        isMyComment: c.isMyComment
+      }));
+      setCmStatus(`Saving ${toSave.length} comment(s)...`, false);
+      await sendToBackgroundCM({ type: "SAVE_MULTIPLE_COMMENTS", comments: toSave });
+      await loadComments();
+      setCmStatus(`\u2713 Scanned and saved ${res.comments.length} comment(s) from post!`, false);
+    } catch (err) {
+      setCmStatus(`Scan failed: ${String(err)}`, true);
+    } finally {
+      cmEl.scanBtn.disabled = false;
+      cmEl.scanBtn.textContent = origText;
+    }
   }
   function escapeHtml(str) {
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -598,6 +664,19 @@ ${job.failed || 0} failed`;
   cmEl.sort.addEventListener("change", renderComments);
   cmEl.refresh.addEventListener("click", () => void loadComments());
   cmEl.clearAll.addEventListener("click", () => void clearAllComments());
+  cmEl.filterAll.addEventListener("click", () => {
+    currentFilter = "all";
+    cmEl.filterAll.classList.add("active");
+    cmEl.filterMy.classList.remove("active");
+    renderComments();
+  });
+  cmEl.filterMy.addEventListener("click", () => {
+    currentFilter = "my";
+    cmEl.filterMy.classList.add("active");
+    cmEl.filterAll.classList.remove("active");
+    renderComments();
+  });
+  cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
   el.detect.addEventListener("click", () => void detect());
   el.collect.addEventListener("click", () => void collectAll());
   el.cancel.addEventListener("click", () => void cancelCollect());

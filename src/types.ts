@@ -44,7 +44,8 @@ export type ContentRequest =
   | { type: "COLLECT_ALL" }
   | { type: "CANCEL_COLLECT" }
   | { type: "GOTO_COMMENT"; commentText: string }
-  | { type: "REPLY_TO_COMMENT"; commentText: string; replyText: string; commentId?: string };
+  | { type: "REPLY_TO_COMMENT"; commentText: string; replyText: string; commentId?: string }
+  | { type: "SCAN_POST_COMMENTS"; autoExpand?: boolean; maxExpandClicks?: number };
 
 export type DetectErrorCode = "NO_PHOTOS" | "AMBIGUOUS_POST" | "DETECT_FAILED";
 
@@ -65,6 +66,23 @@ export interface AckResponse {
 
 export type ReplyResponse =
   | { ok: true }
+  | { ok: false; error: string };
+
+export interface ScannedPostComment {
+  id: string;
+  text: string;
+  postUrl: string;
+  authorName: string;
+  authorProfileUrl?: string;
+  authorId?: string;
+  commentDate?: string;
+  commentId?: string;
+  isReply?: boolean;
+  isMyComment?: boolean;
+}
+
+export type ScanCommentsResponse =
+  | { ok: true; comments: ScannedPostComment[]; total: number; postUrl: string }
   | { ok: false; error: string };
 
 // ----------------------------------------------------- messages to background
@@ -157,16 +175,22 @@ export interface SavedComment {
   text: string;
   /** Best available URL of the Facebook post the comment belongs to. */
   postUrl: string;
-  /** Display name of the logged-in user at the time the comment was saved. */
+  /** Display name of the commenter at the time the comment was saved. */
   authorName: string;
-  /** Canonical profile path/id of the logged-in user (e.g. "/profile.php?id=123" or "/username"). */
+  /** Canonical profile path/id of the commenter. */
   authorId: string;
+  /** Full profile URL if available. */
+  authorProfileUrl?: string;
   /** Unix timestamp (ms) when the comment was saved to storage. */
   savedAt: number;
   /** Raw date/time string from the Facebook DOM — best-effort, may be relative (e.g. "2h"). */
   commentDate?: string;
   /** Facebook comment ID extracted from the DOM — used to deep-link directly to the comment. */
   commentId?: string;
+  /** True if this is a reply to another comment. */
+  isReply?: boolean;
+  /** True if authored by the logged-in user. */
+  isMyComment?: boolean;
 }
 
 /** Sent by the comment-scanner content script to the background service worker. */
@@ -179,9 +203,10 @@ export type CommentMessage = {
 export type CommentManagerMessage =
   | { type: "GET_COMMENTS" }
   | { type: "DELETE_COMMENT"; id: string }
-  | { type: "CLEAR_COMMENTS" };
+  | { type: "CLEAR_COMMENTS" }
+  | { type: "SAVE_MULTIPLE_COMMENTS"; comments: Omit<SavedComment, "id" | "savedAt">[] };
 
 export type CommentManagerResponse =
   | { ok: true; comments: SavedComment[] }
-  | { ok: true; comments?: undefined }
+  | { ok: true; comments?: undefined; savedCount?: number }
   | { ok: false; error: string };

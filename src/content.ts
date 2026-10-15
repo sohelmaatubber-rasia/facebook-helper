@@ -27,6 +27,8 @@ import type {
   DetectResponse,
   Photo,
   PhotoSource,
+  ScanCommentsResponse,
+  ScannedPostComment,
 } from "./types";
 
 declare global {
@@ -35,8 +37,15 @@ declare global {
     __fbHelperListener?: (
       message: ContentRequest,
       sender: chrome.runtime.MessageSender,
-      sendResponse: (response: DetectResponse | AckResponse | { ok: true } | { ok: false; error: string }) => void
-    ) => void;
+      sendResponse: (
+        response:
+          | DetectResponse
+          | AckResponse
+          | { ok: true }
+          | { ok: false; error: string }
+          | ScanCommentsResponse
+      ) => void
+    ) => void | boolean;
     /** Set by CANCEL_COLLECT to stop the viewer walk. */
     __fbHelperCancel?: boolean;
   }
@@ -1060,12 +1069,300 @@ async function replyToCommentOnPage(
   return { ok: true };
 }
 
+// -------------------------------------------------- scan post comments engine
+
+const NON_USER_PATH_RE =
+  /^\/(groups|events|pages|hashtag|gaming|watch|marketplace|business|help|policies|settings|privacy|legal|about)\b/i;
+const POST_HREF_RE =
+  /\/(?:posts|permalink|story\.php|(?:photo|reel)\/|\d{10,}\/posts\/|share\/p\/)|\?story_fbid=/;
+const COMMENT_ACTION_LABEL_RE =
+  /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
+const UI_TEXT_CLEAN_RE =
+  /^(like|reply|share|see\s+translation|edit|delete|hide|report|more|·|\d+[smhdwy]|\d+\s*(second|minute|hour|day|week|month|year)s?\s*(ago)?|পছন্দ\s*করুন|উত্তর\s*দিন|শেয়ার\s*করুন)$/i;
+
+function profilePathFromHref(href: string): string {
+  if (!href) return "";
+  try {
+    const u = new URL(href, location.href);
+    if (u.hostname !== "www.facebook.com" && !u.hostname.endsWith(".facebook.com")) return "";
+    if (NON_USER_PATH_RE.test(u.pathname)) return "";
+
+    if (u.pathname === "/profile.php") {
+      const id = u.searchParams.get("id");
+      return id ? `/profile.php?id=${id}` : "";
+    }
+    const peopleM = u.pathname.match(/^\/people\/[^/]+\/(\d+)/);
+    if (peopleM) return `/profile.php?id=${peopleM[1]}`;
+
+    const slugM = u.pathname.match(/^\/([a-zA-Z0-9][a-zA-Z0-9._-]*)(?:\/.*)?$/);
+    if (slugM) {
+      const slug = slugM[1];
+      if (NON_USER_PATH_RE.test(`/${slug}`)) return "";
+      return `/${slug}`;
+    }
+  } catch (_) {}
+  return "";
+}
+
+function makeCommentId(postUrl: string, text: string, authorId: string): string {
+  const raw = `${authorId}|${postUrl}|${text.slice(0, 150)}`;
+  try {
+    return btoa(unescape(encodeURIComponent(raw)));
+  } catch (_) {
+    return btoa(raw.replace(/[^\x00-\x7F]/g, "?"));
+  }
+}
+
+function extractCommentId(el: Element): string | undefined {
+  const byAttr = el.querySelector("[data-commentid]");
+  if (byAttr) return byAttr.getAttribute("data-commentid") || undefined;
+
+  for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    try {
+      const u = new URL(a.getAttribute("href") || "", location.href);
+      const cid = u.searchParams.get("comment_id");
+      if (cid) return cid;
+      const m = u.pathname.match(/\/comment\/(\d+)/);
+      if (m) return m[1];
+    } catch (_) {}
+  }
+  return undefined;
+}
+
+function extractCommentDate(commentRoot: Element): string | undefined {
+  const abbr = commentRoot.querySelector<HTMLElement>("abbr[title]");
+  if (abbr?.title) return abbr.title;
+
+  for (const a of commentRoot.querySelectorAll<HTMLElement>("a[aria-label]")) {
+    const label = a.getAttribute("aria-label") || "";
+    if (/\d/.test(label) && label.length < 60) return label;
+  }
+  return undefined;
+}
+
+function extractPostUrlFromPage(el?: Element): string {
+  if (POST_HREF_RE.test(location.pathname + location.search)) {
+    return location.origin + location.pathname + location.search;
+  }
+  if (el) {
+    let cur: Element | null = el;
+    while (cur && cur !== document.body) {
+      if (cur.tagName === "A") {
+        try {
+          const href = (cur as HTMLAnchorElement).href;
+          if (POST_HREF_RE.test(href)) return href;
+        } catch (_) {}
+      }
+      for (const a of cur.querySelectorAll<HTMLAnchorElement>(":scope > a[href], :scope > * > a[href]")) {
+        if (POST_HREF_RE.test(a.href)) return a.href;
+      }
+      cur = cur.parentElement;
+    }
+  }
+  return location.href;
+}
+
+function extractCommentTextContent(commentRoot: Element, authorName: string): string {
+  const parts: string[] = [];
+  const walker = document.createTreeWalker(commentRoot, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node): number => {
+      const text = (node.textContent || "").trim();
+      if (!text) return NodeFilter.FILTER_REJECT;
+
+      let el: Element | null = node.parentElement;
+      while (el && el !== commentRoot) {
+        const tag = el.tagName;
+        const role = (el.getAttribute("role") || "").toLowerCase();
+        if (tag === "BUTTON" || role === "button") return NodeFilter.FILTER_REJECT;
+        if (tag === "A") {
+          const linkText = (el.textContent || "").trim();
+          if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return NodeFilter.FILTER_REJECT;
+        }
+        el = el.parentElement;
+      }
+
+      if (UI_TEXT_CLEAN_RE.test(text) || text === authorName) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const t = (node.textContent || "").trim();
+    if (t) parts.push(t);
+  }
+
+  let text = parts.join(" ").replace(/\s{2,}/g, " ").trim();
+  text = text.replace(/^[·\-–—]+\s*/, "").replace(/\s*[·\-–—]+$/, "").trim();
+  return text;
+}
+
+async function autoExpandComments(container: Element, maxClicks = 6): Promise<void> {
+  const EXPAND_BUTTON_RE =
+    /(view\s*(more|previous)\s*comment|view\s*\d+\s*(more\s*)?repl|আরও\s*মন্তব্য|পূর্ববর্তী\s*মন্তব্য|উত্তর\s*দেখুন)/i;
+
+  for (let i = 0; i < maxClicks; i++) {
+    const buttons = container.querySelectorAll<HTMLElement>('[role="button"], button');
+    let clickedAny = false;
+
+    for (const b of buttons) {
+      const text = (b.getAttribute("aria-label") || b.textContent || "").trim();
+      if (EXPAND_BUTTON_RE.test(text)) {
+        b.scrollIntoView({ behavior: "instant", block: "nearest" });
+        b.click();
+        clickedAny = true;
+        await sleep(650);
+        break;
+      }
+    }
+
+    if (!clickedAny) break;
+  }
+}
+
+async function scanPostComments(
+  autoExpand = true,
+  maxExpandClicks = 6
+): Promise<ScanCommentsResponse> {
+  try {
+    let postContainer: HTMLElement = document.body;
+    const articles = document.querySelectorAll<HTMLElement>('[role="article"]');
+    if (articles.length > 1) {
+      const vMid = window.innerHeight / 2;
+      let closest: HTMLElement | null = null;
+      let minDistance = Infinity;
+      for (const art of articles) {
+        if (art.parentElement?.closest('[role="article"]')) continue;
+        const rect = art.getBoundingClientRect();
+        const dist = Math.abs(rect.top + rect.height / 2 - vMid);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closest = art;
+        }
+      }
+      if (closest) postContainer = closest;
+    }
+
+    const postUrl = extractPostUrlFromPage(postContainer);
+
+    if (autoExpand) {
+      await autoExpandComments(postContainer, maxExpandClicks);
+    }
+
+    const candidateRoots = new Set<Element>();
+    const actionNodes = postContainer.querySelectorAll<HTMLElement>('[role="button"], [aria-label]');
+
+    for (const el of actionNodes) {
+      const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+      const text = (el.textContent || "").trim().toLowerCase();
+      const isAction =
+        COMMENT_ACTION_LABEL_RE.test(text) ||
+        COMMENT_ACTION_LABEL_RE.test(aria) ||
+        text === "উত্তর দিন" ||
+        text === "পছন্দ করুন";
+
+      if (!isAction) continue;
+
+      let candidate: Element | null = el.parentElement;
+      for (let depth = 0; depth < 10 && candidate && candidate !== postContainer; depth++) {
+        const cText = (candidate.textContent || "").trim();
+        if (cText.length === 0 || cText.length > 2500) {
+          candidate = candidate.parentElement;
+          continue;
+        }
+        if (candidate.querySelector("a[href]") !== null) {
+          candidateRoots.add(candidate);
+          break;
+        }
+        candidate = candidate.parentElement;
+      }
+    }
+
+    for (const art of postContainer.querySelectorAll<HTMLElement>('[role="article"]')) {
+      if (art !== postContainer) {
+        candidateRoots.add(art);
+      }
+    }
+
+    const comments: ScannedPostComment[] = [];
+    const seenIds = new Set<string>();
+
+    for (const root of candidateRoots) {
+      let authorLink: HTMLAnchorElement | null = null;
+      for (const a of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+        const path = profilePathFromHref(a.getAttribute("href") || "");
+        if (path) {
+          authorLink = a;
+          break;
+        }
+      }
+
+      if (!authorLink) continue;
+
+      const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
+      const authorName = (
+        authorLink.querySelector("img")?.getAttribute("alt") ||
+        authorLink.textContent ||
+        ""
+      ).trim();
+
+      if (!authorName) continue;
+
+      const text = extractCommentTextContent(root, authorName);
+      if (!text) continue;
+
+      const commentDate = extractCommentDate(root);
+      const commentId = extractCommentId(root);
+      const uniqueId = makeCommentId(postUrl, text, authorPath || authorName);
+
+      if (seenIds.has(uniqueId)) continue;
+      seenIds.add(uniqueId);
+
+      const isReply =
+        root.closest('[role="group"]') !== null ||
+        (root.parentElement?.closest('[role="article"]') !== null &&
+          root.parentElement?.closest('[role="article"]') !== postContainer);
+
+      comments.push({
+        id: uniqueId,
+        text,
+        postUrl,
+        authorName,
+        authorProfileUrl: authorLink.href,
+        authorId: authorPath,
+        commentDate,
+        commentId,
+        isReply,
+      });
+    }
+
+    return {
+      ok: true,
+      comments,
+      total: comments.length,
+      postUrl,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: String(err),
+    };
+  }
+}
+
 // ------------------------------------------------------------ messaging
 // Replace any listener left by a previous injection (e.g. after extension reload).
 function onMessage(
   message: ContentRequest,
   _sender: chrome.runtime.MessageSender,
-  sendResponse: (response: DetectResponse | AckResponse | { ok: true } | { ok: false; error: string }) => void
+  sendResponse: (
+    response:
+      | DetectResponse
+      | AckResponse
+      | { ok: true }
+      | { ok: false; error: string }
+      | ScanCommentsResponse
+  ) => void
 ): boolean | void {
   switch (message?.type) {
     case "DETECT_PHOTOS":
@@ -1093,6 +1390,11 @@ function onMessage(
         .then(sendResponse)
         .catch((err) => sendResponse({ ok: false, error: String(err) }));
       return true; // ← CRITICAL: keeps the message channel open for async sendResponse
+    case "SCAN_POST_COMMENTS":
+      scanPostComments(message.autoExpand, message.maxExpandClicks)
+        .then(sendResponse)
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
   }
 }
 

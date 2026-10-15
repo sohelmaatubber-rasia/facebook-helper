@@ -21,6 +21,30 @@ p { margin: 6px 0; }
 .tab-btn.active { background: #fff; color: #1877f2; border-color: #1877f2; border-bottom: 1px solid #fff; }
 .tab-btn:hover:not(.active) { background: #e8e8e8; }
 
+/* ---- comment scanner header & scan box ---- */
+.cm-scan-box {
+    background: #f0f2f5; border: 1px solid #d8dadf; border-radius: 6px;
+    padding: 8px 10px; margin-bottom: 8px;
+}
+.cm-btn-scan {
+    width: 100%; padding: 7px; margin: 0 0 6px 0; font-size: 12px; font-weight: bold;
+    background: #1877f2; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+}
+.cm-btn-scan:hover { background: #166fe5; }
+.cm-btn-scan:disabled { background: #9cbce8; cursor: not-allowed; }
+.cm-scan-options { font-size: 11px; color: #4b4f56; }
+.cm-checkbox-label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.cm-checkbox-label input { margin: 0; }
+
+/* ---- filter tabs ---- */
+.cm-filter-bar { display: flex; gap: 4px; margin-bottom: 8px; }
+.cm-filter-btn {
+    flex: 1; padding: 4px 6px; font-size: 11px; font-weight: 600; width: auto; margin: 0;
+    border: 1px solid #ccd0d5; border-radius: 12px; background: #fff; color: #606770; cursor: pointer;
+}
+.cm-filter-btn.active { background: #e7f3ff; color: #1877f2; border-color: #1877f2; }
+.cm-filter-btn:hover:not(.active) { background: #f2f3f5; }
+
 /* ---- comment manager toolbar ---- */
 .cm-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
 .cm-search { flex: 1; padding: 5px 7px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px; outline: none; }
@@ -29,16 +53,27 @@ p { margin: 6px 0; }
 
 /* ---- comment list ---- */
 .cm-list {
-    max-height: 340px; overflow-y: auto; border: 1px solid #ddd;
+    max-height: 310px; overflow-y: auto; border: 1px solid #ddd;
     border-radius: 4px; padding: 4px;
 }
 .cm-empty { color: #888; text-align: center; padding: 20px 0; margin: 0; font-style: italic; }
-.cm-status { color: #b00020; margin: 4px 0; }
+.cm-status { color: #b00020; margin: 4px 0; font-size: 12px; }
+.cm-status.info { color: #1877f2; }
 
 /* ---- individual comment card ---- */
 .cm-card {
     background: #fff; border: 1px solid #e4e6ea; border-radius: 6px;
     padding: 8px 10px; margin: 4px 0;
+}
+.cm-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.cm-card-author { font-size: 12px; color: #050505; font-weight: 600; }
+.cm-badge-reply {
+    font-size: 9px; padding: 1px 5px; border-radius: 8px;
+    background: #e4e6eb; color: #65676b; text-transform: uppercase; font-weight: bold;
+}
+.cm-badge-my {
+    font-size: 9px; padding: 1px 5px; border-radius: 8px;
+    background: #e7f3ff; color: #1877f2; text-transform: uppercase; font-weight: bold;
 }
 .cm-card-text { font-size: 13px; color: #1c1e21; word-break: break-word; white-space: pre-wrap; margin: 0 0 4px; }
 .cm-card-meta { font-size: 11px; color: #8a8d91; margin: 0 0 6px; }

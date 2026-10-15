@@ -43,11 +43,12 @@ This document outlines the architectural breakdown, milestones, and step-by-step
 
 ### **Part 1: Post-Wide On-Demand Comment Scanner**
 *Goal: Allow the user to scan and list all comments on the currently opened post, not just their own.*
+*Status: `COMPLETED`*
 
-- [ ] **1.1: On-demand Scan Trigger:**
+- [x] **1.1: On-demand Scan Trigger:**
   - Add a **"Scan Post Comments"** button in `popup.html`.
   - Sends a `SCAN_POST_COMMENTS` message to `content.ts`.
-- [ ] **1.2: DOM Traversal for Post Comments:**
+- [x] **1.2: DOM Traversal for Post Comments:**
   - Identify the active post container (article, feed unit, or modal).
   - Extract all comment nodes including:
     - Comment ID & Permalinks
@@ -55,9 +56,9 @@ This document outlines the architectural breakdown, milestones, and step-by-step
     - Comment Text Content
     - Timestamp & Relative Date
     - Parent Comment ID (detect replies vs top-level comments)
-- [ ] **1.3: Auto-Expansion of Hidden Comments:**
+- [x] **1.3: Auto-Expansion of Hidden Comments:**
   - Support clicking "View more comments" / "View previous comments" / "X replies" up to a configurable depth limit.
-  - Progress reporting (`SCANNING_COMMENTS_PROGRESS`) to popup with real-time count.
+  - Progress reporting and instant saving to background storage.
 
 ---
 

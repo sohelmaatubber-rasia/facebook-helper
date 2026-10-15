@@ -39,6 +39,22 @@
     <!-- ==================== Comment Manager Tab ==================== -->
     <section id="sectionComments" hidden>
 
+        <!-- Actions: Scan comments from active post -->
+        <div class="cm-scan-box">
+            <button id="cmScanPostBtn" class="cm-btn-scan">📥 Scan Post Comments</button>
+            <div class="cm-scan-options">
+                <label class="cm-checkbox-label">
+                    <input type="checkbox" id="cmAutoExpand" checked> Auto-expand "View more comments"
+                </label>
+            </div>
+        </div>
+
+        <!-- Filter tabs: All Comments vs My Comments -->
+        <div class="cm-filter-bar">
+            <button class="cm-filter-btn active" id="cmFilterAll" data-filter="all">All Comments</button>
+            <button class="cm-filter-btn" id="cmFilterMy" data-filter="my">My Comments</button>
+        </div>
+
         <!-- Toolbar: search + sort + filter -->
         <div class="cm-toolbar">
             <input type="search" id="cmSearch" class="cm-search" placeholder="Search comments…" autocomplete="off">

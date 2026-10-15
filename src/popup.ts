@@ -19,6 +19,8 @@ import type {
   ReplyResponse,
   SavedComment,
   Scan,
+  ScanCommentsResponse,
+  ScannedPostComment,
   StartResponse,
 } from "./types";
 
@@ -311,6 +313,10 @@ tabCommentsBtn.addEventListener("click", () => switchTab("comments"));
 // ---------------------------------------------------------------------- comment manager
 
 const cmEl = {
+  scanBtn: $<HTMLButtonElement>("cmScanPostBtn"),
+  autoExpand: $<HTMLInputElement>("cmAutoExpand"),
+  filterAll: $<HTMLButtonElement>("cmFilterAll"),
+  filterMy: $<HTMLButtonElement>("cmFilterMy"),
   search: $<HTMLInputElement>("cmSearch"),
   sort: $<HTMLSelectElement>("cmSort"),
   list: $("cmList"),
@@ -319,6 +325,9 @@ const cmEl = {
   clearAll: $<HTMLButtonElement>("cmClearAll"),
   count: $("cmCount"),
 };
+
+/** Active filter: "all" comments or only "my" comments. */
+let currentFilter: "all" | "my" = "all";
 
 /** In-memory copy of comments for fast search/sort without re-fetching. */
 let allComments: SavedComment[] = [];
@@ -331,6 +340,7 @@ function setCmStatus(text: string, isError = true): void {
   cmEl.status.textContent = text;
   cmEl.status.hidden = !text;
   cmEl.status.classList.toggle("error", isError);
+  cmEl.status.classList.toggle("info", !isError);
 }
 
 function formatDate(ts: number): string {
@@ -488,11 +498,19 @@ function renderComments(): void {
   const query = cmEl.search.value.trim().toLowerCase();
   const sort = cmEl.sort.value as "newest" | "oldest";
 
-  let list = query
-    ? allComments.filter(
-        (c) => c.text.toLowerCase().includes(query) || c.postUrl.toLowerCase().includes(query)
-      )
-    : [...allComments];
+  let list = allComments;
+  if (currentFilter === "my") {
+    list = list.filter((c) => c.isMyComment);
+  }
+
+  if (query) {
+    list = list.filter(
+      (c) =>
+        c.text.toLowerCase().includes(query) ||
+        (c.authorName && c.authorName.toLowerCase().includes(query)) ||
+        c.postUrl.toLowerCase().includes(query)
+    );
+  }
 
   if (sort === "oldest") list = list.slice().reverse();
 
@@ -500,7 +518,11 @@ function renderComments(): void {
 
   if (!list.length) {
     cmEl.list.innerHTML = `<p class="cm-empty">${
-      query ? "No comments match your search." : "No comments saved yet."
+      query
+        ? "No comments match your search."
+        : currentFilter === "my"
+        ? "No personal comments found yet."
+        : "No comments found. Click 'Scan Post Comments' on a Facebook post!"
     }</p>`;
     return;
   }
@@ -518,6 +540,11 @@ function renderComments(): void {
       : `Saved ${formatDate(comment.savedAt)}`;
 
     card.innerHTML = `
+      <div class="cm-card-header">
+        <strong class="cm-card-author">${escapeHtml(comment.authorName || "Facebook User")}</strong>
+        ${comment.isReply ? `<span class="cm-badge-reply">Reply</span>` : ""}
+        ${comment.isMyComment ? `<span class="cm-badge-my">You</span>` : ""}
+      </div>
       <p class="cm-card-text">${escapeHtml(comment.text)}</p>
       <p class="cm-card-meta">${escapeHtml(dateStr)}<br>
         <a href="${escapeHtml(comment.postUrl)}" target="_blank" title="${escapeHtml(comment.postUrl)}"
@@ -541,6 +568,66 @@ function renderComments(): void {
   }
 
   cmEl.list.appendChild(frag);
+}
+
+/**
+ * Scan all comments on the active Facebook post and save them.
+ */
+async function scanPostCommentsAction(): Promise<void> {
+  setCmStatus("");
+  const tab = await getFacebookTab();
+  if (!tab?.id) {
+    setCmStatus("Open a Facebook page or post in the active tab first.", true);
+    return;
+  }
+
+  cmEl.scanBtn.disabled = true;
+  const origText = cmEl.scanBtn.textContent || "📥 Scan Post Comments";
+  cmEl.scanBtn.textContent = "Scanning comments...";
+  setCmStatus("Injecting scanner & analyzing comments...", false);
+
+  try {
+    await inject(tab);
+    const autoExpand = cmEl.autoExpand.checked;
+    const res = await chrome.tabs.sendMessage<ContentRequest, ScanCommentsResponse>(tab.id, {
+      type: "SCAN_POST_COMMENTS",
+      autoExpand,
+      maxExpandClicks: 8,
+    });
+
+    if (!res?.ok) {
+      setCmStatus(`Scan failed: ${(res as { error?: string })?.error || "Unknown error"}`, true);
+      return;
+    }
+
+    if (!res.comments || res.comments.length === 0) {
+      setCmStatus("No comments found on this post. (Scroll to comments section and retry).", true);
+      return;
+    }
+
+    const toSave: Omit<SavedComment, "id" | "savedAt">[] = res.comments.map((c) => ({
+      text: c.text,
+      postUrl: c.postUrl,
+      authorName: c.authorName,
+      authorId: c.authorId || c.authorName,
+      authorProfileUrl: c.authorProfileUrl,
+      commentDate: c.commentDate,
+      commentId: c.commentId,
+      isReply: c.isReply,
+      isMyComment: c.isMyComment,
+    }));
+
+    setCmStatus(`Saving ${toSave.length} comment(s)...`, false);
+    await sendToBackgroundCM({ type: "SAVE_MULTIPLE_COMMENTS", comments: toSave });
+
+    await loadComments();
+    setCmStatus(`✓ Scanned and saved ${res.comments.length} comment(s) from post!`, false);
+  } catch (err) {
+    setCmStatus(`Scan failed: ${String(err)}`, true);
+  } finally {
+    cmEl.scanBtn.disabled = false;
+    cmEl.scanBtn.textContent = origText;
+  }
 }
 
 function escapeHtml(str: string): string {
@@ -738,6 +825,22 @@ cmEl.search.addEventListener("input", renderComments);
 cmEl.sort.addEventListener("change", renderComments);
 cmEl.refresh.addEventListener("click", () => void loadComments());
 cmEl.clearAll.addEventListener("click", () => void clearAllComments());
+
+cmEl.filterAll.addEventListener("click", () => {
+  currentFilter = "all";
+  cmEl.filterAll.classList.add("active");
+  cmEl.filterMy.classList.remove("active");
+  renderComments();
+});
+
+cmEl.filterMy.addEventListener("click", () => {
+  currentFilter = "my";
+  cmEl.filterMy.classList.add("active");
+  cmEl.filterAll.classList.remove("active");
+  renderComments();
+});
+
+cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
 
 // ---------------------------------------------------------------------- init
 el.detect.addEventListener("click", () => void detect());
