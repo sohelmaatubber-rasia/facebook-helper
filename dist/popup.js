@@ -276,7 +276,7 @@ ${job.failed || 0} failed`;
     clearAll: $("cmClearAll"),
     count: $("cmCount")
   };
-  var currentFilter = "all";
+  var currentFilter = "my";
   var allComments = [];
   function sendToBackgroundCM(message) {
     return chrome.runtime.sendMessage(message);
@@ -439,7 +439,7 @@ ${job.failed || 0} failed`;
     if (sort === "oldest") list = list.slice().reverse();
     cmEl.count.textContent = `${list.length} comment${list.length !== 1 ? "s" : ""}`;
     if (!list.length) {
-      cmEl.list.innerHTML = `<p class="cm-empty">${query ? "No comments match your search." : currentFilter === "my" ? "No personal comments found yet." : "No comments found. Click 'Scan Post Comments' on a Facebook post!"}</p>`;
+      cmEl.list.innerHTML = `<p class="cm-empty">${query ? "No comments match your search." : currentFilter === "my" ? "No personal comments tracked yet. When you comment on any Facebook post (even with emojis), it will appear here with the post link!" : "No comments found. Click 'Scan Post Comments' on a Facebook post!"}</p>`;
       return;
     }
     cmEl.list.innerHTML = "";

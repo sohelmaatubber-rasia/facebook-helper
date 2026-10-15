@@ -860,11 +860,53 @@
     }
     return void 0;
   }
+  function cleanFbUrl(u) {
+    u.searchParams.delete("__cft__");
+    u.searchParams.delete("__tn__");
+    u.searchParams.delete("ref");
+    u.searchParams.delete("notif_id");
+    u.searchParams.delete("notif_t");
+  }
   function extractPostUrlFromPage(el) {
     if (POST_HREF_RE.test(location.pathname + location.search)) {
       return location.origin + location.pathname + location.search;
     }
     if (el) {
+      let postRoot = el.closest(
+        '[role="article"], div[data-pagelet*="FeedUnit"], div[data-ad-preview], div[data-ad-rendering]'
+      );
+      if (!postRoot) postRoot = el;
+      const candidates = [];
+      for (const a of postRoot.querySelectorAll("a[href]")) {
+        const rawHref = a.getAttribute("href") || "";
+        if (!rawHref || rawHref === "#") continue;
+        try {
+          const u = new URL(rawHref, location.href);
+          if (!u.hostname.includes("facebook.com")) continue;
+          const p = u.pathname;
+          if (p.includes("/posts/") || p.includes("pfbid") || p.includes("/permalink/") || p.includes("/share/p/")) {
+            cleanFbUrl(u);
+            candidates.push({ href: u.toString(), priority: 10 });
+            continue;
+          }
+          if (p.includes("/photo") || p.includes("/reel/") || p.includes("/watch/") || u.searchParams.has("story_fbid")) {
+            cleanFbUrl(u);
+            candidates.push({ href: u.toString(), priority: 8 });
+            continue;
+          }
+          const aria = (a.getAttribute("aria-label") || "").toLowerCase();
+          if (/\d+\s*(hr|min|hour|minute|day|sec|yr|h|m|s|d|w|ঘণ্টা|মিনিট|দিন)/.test(aria)) {
+            cleanFbUrl(u);
+            candidates.push({ href: u.toString(), priority: 9 });
+            continue;
+          }
+        } catch (_) {
+        }
+      }
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => b.priority - a.priority);
+        return candidates[0].href;
+      }
       let cur = el;
       while (cur && cur !== document.body) {
         if (cur.tagName === "A") {
@@ -874,9 +916,6 @@
           } catch (_) {
           }
         }
-        for (const a of cur.querySelectorAll(":scope > a[href], :scope > * > a[href]")) {
-          if (POST_HREF_RE.test(a.href)) return a.href;
-        }
         cur = cur.parentElement;
       }
     }
@@ -884,6 +923,7 @@
   }
   function cleanCommentText(text) {
     let cleaned = text.replace(/\s{2,}/g, " ").trim();
+    cleaned = cleaned.replace(/^(Facebook\s*)+/gi, "").trim();
     cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
     return cleaned;
   }
@@ -1085,6 +1125,23 @@
     }
     return null;
   }
+  function isFeedPost(el) {
+    if (el.querySelector(
+      '[aria-label*="Leave a comment" i], [aria-label*="\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF \u09B2\u09BF\u0996\u09C1\u09A8" i], [aria-label*="Send this to friends" i], [aria-label*="Share" i], [aria-label*="\u09B6\u09C7\u09AF\u09BC\u09BE\u09B0" i], [data-ad-preview], [data-ad-rendering]'
+    ) !== null) {
+      return true;
+    }
+    if (el.matches('[data-pagelet*="FeedUnit"], [role="feed"] > div, div[data-ad-preview]')) {
+      return true;
+    }
+    if (el.querySelectorAll('[role="article"]').length > 1) {
+      return true;
+    }
+    if (el.querySelector('a[aria-label="Facebook" i], a[href^="/home.php"]')) {
+      return true;
+    }
+    return false;
+  }
   function sameProfile(a, b) {
     return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
   }
@@ -1111,8 +1168,7 @@
       }
       const candidateRoots = /* @__PURE__ */ new Set();
       for (const art of postContainer.querySelectorAll('[role="article"]')) {
-        if (art === postContainer) continue;
-        if (art.querySelectorAll('[role="article"]').length > 2) continue;
+        if (art === postContainer || isFeedPost(art)) continue;
         candidateRoots.add(art);
       }
       for (const el of postContainer.querySelectorAll(
@@ -1127,12 +1183,13 @@
         const isAction = COMMENT_ACTION_LABEL_RE.test(text) || COMMENT_ACTION_LABEL_RE.test(aria) || text === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || text === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8" || text === "\u09B2\u09BE\u0987\u0995" || text === "\u09B0\u09BF\u09AA\u09CD\u09B2\u09BE\u0987" || aria.includes("reply to") || aria.includes("\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8");
         if (!isAction) continue;
         const closestArt = el.closest('[role="article"]');
-        if (closestArt && closestArt !== postContainer && closestArt.querySelectorAll('[role="article"]').length <= 2 && postContainer.contains(closestArt)) {
+        if (closestArt && closestArt !== postContainer && !isFeedPost(closestArt) && closestArt.querySelectorAll('[role="article"]').length <= 2 && postContainer.contains(closestArt)) {
           candidateRoots.add(closestArt);
           continue;
         }
         let candidate = el.parentElement;
         for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
+          if (isFeedPost(candidate)) break;
           let hasAuthor = false;
           for (const a of candidate.querySelectorAll("a[href]")) {
             if (profilePathFromHref(a.getAttribute("href") || "")) {

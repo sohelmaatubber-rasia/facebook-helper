@@ -110,40 +110,71 @@ function profilePathFromHref(href: string): string {
   return "";
 }
 
-/** Case-insensitive, trailing-slash-insensitive comparison. */
+function extractNumericId(p: string): string | null {
+  const m = p.match(/(?:id=|\/user\/|\/people\/[^/]+\/|\/pages\/[^/]+\/)(\d+)/);
+  if (m) return m[1];
+  const digitsOnly = p.replace(/^\/+|\/+$/g, "");
+  if (/^\d{8,}$/.test(digitsOnly)) return digitsOnly;
+  return null;
+}
+
+/** Case-insensitive, trailing-slash-insensitive comparison with numeric ID normalization. */
 function sameProfile(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const numA = extractNumericId(a);
+  const numB = extractNumericId(b);
+  if (numA && numB) return numA === numB;
   return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
 }
 
 // ------------------------------------------------------------------ profile ID resolution
 
+/** Strategy 1: Read c_user cookie directly if accessible. */
+function findProfileFromCookie(): { path: string; name: string } | null {
+  try {
+    const m = document.cookie.match(/(?:^|;\s*)c_user=(\d+)/);
+    if (m && m[1]) {
+      return { path: `/profile.php?id=${m[1]}`, name: "" };
+    }
+  } catch (_) {}
+  return null;
+}
+
+/** Strategy 2: Look for USER_ID or actorID embedded in Facebook script tags. */
+function findProfileFromScripts(): { path: string; name: string } | null {
+  try {
+    const scripts = document.querySelectorAll("script");
+    for (let i = 0; i < scripts.length && i < 30; i++) {
+      const text = scripts[i].textContent || "";
+      if (!text.includes('"USER_ID"') && !text.includes('"actorID"')) continue;
+      const m = text.match(/"USER_ID":"(\d{8,})"/) || text.match(/"actorID":"(\d{8,})"/);
+      if (m && m[1] && m[1] !== "0") {
+        return { path: `/profile.php?id=${m[1]}`, name: "" };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 /**
- * Strategy A: look adjacent to a "Write a comment" text input.
- *
- * Facebook renders the logged-in user's avatar as an <a> directly beside the
- * comment input box.  This is the most reliable signal because it cannot be
- * confused with post authors or other commenters.
+ * Strategy 3: look adjacent to a "Write a comment" text input.
+ * Facebook renders the logged-in user's avatar as an <a> directly beside the comment box.
  */
 function findProfileNearCommentInput(): { path: string; name: string } | null {
-  // Find comment text boxes (contenteditable or input)
   const textboxes = document.querySelectorAll<HTMLElement>(
     '[role="textbox"][contenteditable], [contenteditable="true"]'
   );
 
   for (const box of textboxes) {
     const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
-    // Only look near elements labelled as comment inputs
-    if (!label.includes("comment") && !label.includes("write")) continue;
+    if (!label.includes("comment") && !label.includes("write") && !label.includes("মন্তব্য")) continue;
 
-    // Walk up to find a container that also holds a profile link
     let el: Element | null = box.parentElement;
     for (let depth = 0; depth < 8 && el; depth++) {
       for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const path = profilePathFromHref(a.getAttribute("href") || "");
         if (!path) continue;
-        // Prefer links whose only content is an <img> (avatar links)
         const isAvatar = a.querySelector("img") !== null && (a.textContent || "").trim() === "";
-        // Fall back: any profile link in the container
         const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
         const name = imgAlt || (a.textContent || "").trim();
         if (isAvatar || name) {
@@ -156,13 +187,24 @@ function findProfileNearCommentInput(): { path: string; name: string } | null {
   return null;
 }
 
-/**
- * Strategy B: look inside <header> / <nav> / role="banner".
- *
- * The top navigation bar contains the logged-in user's profile link.
- */
+/** Strategy 4: Look inside top header / banner / left navigation sidebar. */
 function findProfileInNav(): { path: string; name: string } | null {
-  const navAreas = document.querySelectorAll<HTMLElement>('header, nav, [role="banner"], [role="navigation"]');
+  // First item in LeftRail / left shortcuts is always the logged in user
+  const leftRail = document.querySelector<HTMLElement>('div[data-pagelet="LeftRail"], [role="navigation"]');
+  if (leftRail) {
+    for (const a of leftRail.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const path = profilePathFromHref(a.getAttribute("href") || "");
+      if (!path) continue;
+      const text = (a.textContent || "").trim();
+      const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
+      const name = (imgAlt || text).slice(0, 80);
+      if (name && name.toLowerCase() !== "facebook" && !NON_USER_PATH_RE.test(path)) {
+        return { path, name };
+      }
+    }
+  }
+
+  const navAreas = document.querySelectorAll<HTMLElement>('header, nav, [role="banner"]');
   for (const nav of navAreas) {
     for (const a of nav.querySelectorAll<HTMLAnchorElement>("a[href]")) {
       const path = profilePathFromHref(a.getAttribute("href") || "");
@@ -170,15 +212,14 @@ function findProfileInNav(): { path: string; name: string } | null {
       const imgAlt = (a.querySelector("img")?.getAttribute("alt") || "").trim();
       const text = (a.textContent || "").trim();
       const name = (imgAlt || text).slice(0, 80);
-      // Skip nav links that look like page names (e.g. "Facebook") or are too generic
       if (!name || name.toLowerCase() === "facebook") continue;
       return { path, name };
     }
   }
 
-  // Fallback: look for explicit profile aria-labels across the document header/nav
+  // Explicit profile aria-labels
   const explicitProfileLinks = document.querySelectorAll<HTMLAnchorElement>(
-    'a[href][aria-label*="profile" i], a[href][aria-label*="প্রোফাইল" i]'
+    'a[href][aria-label*="profile" i], a[href][aria-label*="প্রোফাইল" i], a[href][aria-label*="Your profile" i]'
   );
   for (const a of explicitProfileLinks) {
     const path = profilePathFromHref(a.getAttribute("href") || "");
@@ -192,20 +233,54 @@ function findProfileInNav(): { path: string; name: string } | null {
   return null;
 }
 
+/** Strategy 5: Detect user name from "What's on your mind, [Name]?" feed prompt. */
+function findProfileNameFromFeed(): string | null {
+  const composer = document.querySelector<HTMLElement>(
+    'div[data-pagelet*="FeedUnit"], div[role="main"], div[role="feed"]'
+  );
+  if (!composer) return null;
+  const text = composer.textContent || "";
+  const m = text.match(/What's on your mind,\s*([^?]+)\?/i) ||
+            text.match(/(?:Comment as|হিসেবে মন্তব্য লিখুন)\s*([^\s?]+)/i);
+  if (m && m[1]) {
+    return m[1].trim();
+  }
+  return null;
+}
+
 /**
  * Resolve the logged-in user's profile path (cached after first successful call).
  * Returns null if not yet determinable — the observer will retry on future mutations.
  */
 function resolveMyProfileId(): string | null {
-  if (myProfileId !== undefined) return myProfileId;
+  if (myProfileId !== undefined) {
+    if (!myProfileName) {
+      const feedName = findProfileNameFromFeed();
+      if (feedName) myProfileName = feedName;
+    }
+    return myProfileId;
+  }
 
-  const result = findProfileNearCommentInput() ?? findProfileInNav();
+  const result =
+    findProfileNearCommentInput() ??
+    findProfileInNav() ??
+    findProfileFromScripts() ??
+    findProfileFromCookie();
+
   if (result) {
     myProfileId = result.path;
-    if (result.name) myProfileName = result.name;
+    if (result.name) {
+      myProfileName = result.name;
+    } else {
+      const feedName = findProfileNameFromFeed();
+      if (feedName) myProfileName = feedName;
+    }
     console.debug("[FB Helper] my profile detected:", myProfileId, myProfileName);
     return myProfileId;
   }
+
+  const feedName = findProfileNameFromFeed();
+  if (feedName) myProfileName = feedName;
 
   // Not found yet — leave undefined so we retry next mutation
   return null;
@@ -215,6 +290,8 @@ function resolveMyProfileId(): string | null {
 
 function cleanCommentText(text: string): string {
   let cleaned = text.replace(/\s{2,}/g, " ").trim();
+  // Strip repeated "Facebook Facebook..." screen reader tokens
+  cleaned = cleaned.replace(/^(Facebook\s*)+/gi, "").trim();
   cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
   return cleaned;
 }
@@ -224,8 +301,10 @@ function extractNodeTextWithEmojis(node: Node, authorName: string): string {
 
   function walk(cur: Node) {
     if (cur.nodeType === Node.TEXT_NODE) {
-      const val = cur.textContent || "";
-      result += val;
+      const val = (cur.textContent || "").trim();
+      if (val && val.toLowerCase() !== "facebook" && val !== authorName && !UI_TEXT_RE.test(val)) {
+        result += " " + val + " ";
+      }
       return;
     }
 
@@ -240,6 +319,22 @@ function extractNodeTextWithEmojis(node: Node, authorName: string): string {
         return;
       }
 
+      if (tag === "A") {
+        const linkAria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+        const linkHref = el.getAttribute("href") || "";
+        const linkText = (el.textContent || "").trim();
+        if (
+          linkAria === "facebook" ||
+          linkText.toLowerCase() === "facebook" ||
+          linkHref === "/" ||
+          linkHref.startsWith("/home.php") ||
+          linkText === authorName ||
+          UI_TEXT_RE.test(linkText)
+        ) {
+          return;
+        }
+      }
+
       if (tag === "IMG") {
         const alt = (el.getAttribute("alt") || "").trim();
         const isAvatar =
@@ -247,14 +342,14 @@ function extractNodeTextWithEmojis(node: Node, authorName: string): string {
           alt.toLowerCase().includes("প্রোফাইল") ||
           alt === authorName ||
           el.closest("a")?.textContent?.trim() === authorName;
-        if (!isAvatar && alt) {
+        if (!isAvatar && alt && alt.toLowerCase() !== "facebook") {
           result += " " + alt + " ";
         }
         return;
       }
 
       const aria = (el.getAttribute("aria-label") || "").trim();
-      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+      if (aria && aria.toLowerCase() !== "facebook" && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
         result += " " + aria + " ";
         return;
       }
@@ -279,7 +374,7 @@ function extractFallbackTextWithEmojis(
   function walk(cur: Node) {
     if (cur.nodeType === Node.TEXT_NODE) {
       const val = (cur.textContent || "").trim();
-      if (val && val !== authorName && !UI_TEXT_RE.test(val)) {
+      if (val && val.toLowerCase() !== "facebook" && val !== authorName && !UI_TEXT_RE.test(val)) {
         result += " " + val + " ";
       }
       return;
@@ -294,8 +389,19 @@ function extractFallbackTextWithEmojis(
       if (authorLink && (el === authorLink || authorLink.contains(el))) return;
 
       if (tag === "A") {
+        const linkAria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+        const linkHref = el.getAttribute("href") || "";
         const linkText = (el.textContent || "").trim();
-        if (linkText === authorName || UI_TEXT_RE.test(linkText)) return;
+        if (
+          linkAria === "facebook" ||
+          linkText.toLowerCase() === "facebook" ||
+          linkHref === "/" ||
+          linkHref.startsWith("/home.php") ||
+          linkText === authorName ||
+          UI_TEXT_RE.test(linkText)
+        ) {
+          return;
+        }
       }
 
       // Skip if inside a nested reply thread
@@ -314,14 +420,14 @@ function extractFallbackTextWithEmojis(
           alt.toLowerCase().includes("প্রোফাইল") ||
           alt === authorName ||
           el.closest("a")?.textContent?.trim() === authorName;
-        if (!isAvatar && alt) {
+        if (!isAvatar && alt && alt.toLowerCase() !== "facebook") {
           result += " " + alt + " ";
         }
         return;
       }
 
       const aria = (el.getAttribute("aria-label") || "").trim();
-      if (aria && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
+      if (aria && aria.toLowerCase() !== "facebook" && (role === "img" || /[\u{1F300}-\u{1FAFF}]/u.test(aria)) && !el.hasChildNodes()) {
         result += " " + aria + " ";
         return;
       }
@@ -351,7 +457,7 @@ function extractCommentText(
     if (authorLink && (authorLink.contains(dirEl) || dirEl.contains(authorLink))) continue;
 
     const t = (dirEl.textContent || "").trim();
-    if (t === authorName || UI_TEXT_RE.test(t)) continue;
+    if (t === authorName || t.toLowerCase() === "facebook" || UI_TEXT_RE.test(t)) continue;
     if (dirEl.closest('button, [role="button"]') !== null) continue;
 
     // Skip if inside a nested reply thread
@@ -400,6 +506,8 @@ function findBestAuthor(root: Element): { link: HTMLAnchorElement | null; name: 
       .replace(/^(profile picture of|avatar of|প্রোফাইল ছবি|profile photo of)\s*/i, "")
       .trim();
 
+    if (name.toLowerCase() === "facebook") continue;
+
     if (name && !UI_TEXT_RE.test(name)) {
       bestLink = a;
       bestName = name;
@@ -417,7 +525,7 @@ function findBestAuthor(root: Element): { link: HTMLAnchorElement | null; name: 
     const heading = root.querySelector("h3, h4, strong");
     if (heading) {
       const hText = (heading.textContent || "").trim();
-      if (hText && !UI_TEXT_RE.test(hText)) bestName = hText;
+      if (hText && hText.toLowerCase() !== "facebook" && !UI_TEXT_RE.test(hText)) bestName = hText;
     }
   }
 
@@ -431,30 +539,71 @@ function findBestAuthor(root: Element): { link: HTMLAnchorElement | null; name: 
 
 // ------------------------------------------------------------------ post URL
 
+function cleanFbUrl(u: URL): void {
+  u.searchParams.delete("__cft__");
+  u.searchParams.delete("__tn__");
+  u.searchParams.delete("ref");
+  u.searchParams.delete("notif_id");
+  u.searchParams.delete("notif_t");
+}
+
 /**
  * Extract the best available post URL for the page/element context.
- * Walks up from the comment element looking for a URL that matches a Facebook
- * post pattern.  Falls back to the current page URL.
+ * Finds permalinks inside the enclosing post container (never just facebook.com/).
  */
 function extractPostUrl(el: Element): string {
-  // Check page URL first — if we are already on a single-post page, that's the answer.
   if (POST_HREF_RE.test(location.pathname + location.search)) {
-    // Canonicalise: strip hash, keep path + search
     return location.origin + location.pathname + location.search;
   }
 
-  // Walk up the DOM looking for an ancestor link with a post-like URL
+  // Find enclosing post container
+  let postRoot: Element | null = el.closest(
+    '[role="article"], div[data-pagelet*="FeedUnit"], div[data-ad-preview], div[data-ad-rendering]'
+  );
+  if (!postRoot) postRoot = el;
+
+  const candidates: { href: string; priority: number }[] = [];
+
+  for (const a of postRoot.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    const rawHref = a.getAttribute("href") || "";
+    if (!rawHref || rawHref === "#") continue;
+    try {
+      const u = new URL(rawHref, location.href);
+      if (!u.hostname.includes("facebook.com")) continue;
+
+      const p = u.pathname;
+      if (p.includes("/posts/") || p.includes("pfbid") || p.includes("/permalink/") || p.includes("/share/p/")) {
+        cleanFbUrl(u);
+        candidates.push({ href: u.toString(), priority: 10 });
+        continue;
+      }
+      if (p.includes("/photo") || p.includes("/reel/") || p.includes("/watch/") || u.searchParams.has("story_fbid")) {
+        cleanFbUrl(u);
+        candidates.push({ href: u.toString(), priority: 8 });
+        continue;
+      }
+      const aria = (a.getAttribute("aria-label") || "").toLowerCase();
+      if (/\d+\s*(hr|min|hour|minute|day|sec|yr|h|m|s|d|w|ঘণ্টা|মিনিট|দিন)/.test(aria)) {
+        cleanFbUrl(u);
+        candidates.push({ href: u.toString(), priority: 9 });
+        continue;
+      }
+    } catch (_) {}
+  }
+
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.priority - a.priority);
+    return candidates[0].href;
+  }
+
+  // Fallback: walk up
   let cur: Element | null = el;
   while (cur && cur !== document.body) {
     if (cur.tagName === "A") {
       try {
         const href = (cur as HTMLAnchorElement).href;
         if (POST_HREF_RE.test(href)) return href;
-      } catch (_) { /* ignore */ }
-    }
-    // Also check first-level children links (post header links)
-    for (const a of cur.querySelectorAll<HTMLAnchorElement>(":scope > a[href], :scope > * > a[href]")) {
-      if (POST_HREF_RE.test(a.href)) return a.href;
+      } catch (_) {}
     }
     cur = cur.parentElement;
   }
@@ -465,11 +614,9 @@ function extractPostUrl(el: Element): string {
 // ------------------------------------------------------------------ comment date
 
 function extractCommentDate(commentRoot: Element): string | undefined {
-  // <abbr title="..."> is Facebook's canonical timestamp in some views
   const abbr = commentRoot.querySelector<HTMLElement>("abbr[title]");
   if (abbr?.title) return abbr.title;
 
-  // Aria-label on a <a> sometimes contains "Thursday at 3:45 PM"
   for (const a of commentRoot.querySelectorAll<HTMLElement>("a[aria-label]")) {
     const label = a.getAttribute("aria-label") || "";
     if (/\d/.test(label) && label.length < 60) return label;
@@ -482,93 +629,135 @@ function extractCommentDate(commentRoot: Element): string | undefined {
 /** Patterns that indicate profile section content, NOT a comment. */
 const PROFILE_SECTION_RE = /^(works?\s+at|studied?\s+at|lives?\s+in|from\s+|education|see\s+all\s+(photos|friends|videos|check-ins|likes|posts)|went\s+to|in\s+a\s+relationship|married|single|following|followers?|mutual\s+friend)/i;
 
-/**
- * Returns true only if the element looks like a real comment bubble.
- *
- * Profile page sections ("Works at …", "Education", "See all photos") also
- * contain the logged-in user's profile link, so without this check they get
- * captured as fake comments.
- *
- * A real comment almost always has "Like" or "Reply" action buttons nearby
- * (inside the element or in an immediately enclosing parent/grandparent).
- */
 const COMMENT_ACTION_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
 
-function isLikelyComment(el: Element): boolean {
-  // ── Fast-accept: standard Facebook comment element
+/**
+ * Detect if an element is a Feed Post (news feed card / story) rather than a comment bubble.
+ * Facebook feed posts have post action bars ("Leave a comment", "Share", "Send this to friends"),
+ * feed unit pagelets, multiple nested articles, or top-level navigation links.
+ */
+function isFeedPost(el: Element): boolean {
+  // 1. Post action bar / post action buttons:
   if (
-    el.getAttribute("role") === "article" ||
-    el.closest('[role="article"]') !== null ||
-    el.matches('[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="এর মন্তব্য" i], [aria-label*="এর উত্তর" i]')
+    el.querySelector(
+      '[aria-label*="Leave a comment" i], ' +
+      '[aria-label*="মন্তব্য লিখুন" i], ' +
+      '[aria-label*="Send this to friends" i], ' +
+      '[aria-label*="Share" i], ' +
+      '[aria-label*="শেয়ার" i], ' +
+      '[data-ad-preview], [data-ad-rendering]'
+    ) !== null
   ) {
     return true;
   }
 
-  // ── Fast-reject: profile-section text patterns
-  const rawText = (el.textContent || "").trim();
+  // 2. Direct feed story container
+  if (el.matches('[data-pagelet*="FeedUnit"], [role="feed"] > div, div[data-ad-preview]')) {
+    return true;
+  }
 
-  // Reject if the whole text starts with a profile-section keyword
-  if (PROFILE_SECTION_RE.test(rawText)) return false;
+  // 3. Contains multiple [role="article"] elements (outer post card wrapping comments)
+  if (el.querySelectorAll('[role="article"]').length > 1) {
+    return true;
+  }
 
-  // Reject pure UI phrases
-  if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more|আরও\s*দেখুন)/i.test(rawText)) return false;
+  // 4. Contains top-level Facebook logo / home navigation
+  if (el.querySelector('a[aria-label="Facebook" i], a[href^="/home.php"]')) {
+    return true;
+  }
 
-  // ── Must have Like or Reply buttons nearby
-  // Search in the element itself, its parent, AND grandparent because
-  // Facebook sometimes renders reaction buttons as siblings of the text bubble.
+  return false;
+}
+
+/** Check if the element has controls only available to the comment author (Edit/Delete). */
+function hasAuthorOnlyControls(el: Element): boolean {
   const roots: Element[] = [el];
   if (el.parentElement) roots.push(el.parentElement);
-  if (el.parentElement?.parentElement) roots.push(el.parentElement.parentElement);
 
   for (const root of roots) {
-    // aria-label based detection
     for (const node of root.querySelectorAll<HTMLElement>("[aria-label]")) {
-      const label = (node.getAttribute("aria-label") || "").trim().toLowerCase();
+      const label = (node.getAttribute("aria-label") || "").toLowerCase();
       if (
-        COMMENT_ACTION_RE.test(label) ||
-        label.includes("thumbs up") ||
-        label.endsWith("উত্তর দিন")
+        label.includes("edit or delete") ||
+        label.includes("edit comment") ||
+        label.includes("delete comment") ||
+        label.includes("সম্পাদনা করুন") ||
+        label.includes("মন্তব্য মুছুন")
       ) {
         return true;
       }
-    }
-    // role="button" with text
-    for (const btn of root.querySelectorAll('[role="button"], button')) {
-      const t = (btn.textContent || "").trim().toLowerCase();
-      if (COMMENT_ACTION_RE.test(t) || t === "উত্তর দিন" || t === "পছন্দ করুন") return true;
     }
   }
   return false;
 }
 
+/**
+ * Returns true only if the element looks like a real comment bubble.
+ * Feed posts, profile sections, and non-comment articles are strictly rejected.
+ */
+function isLikelyComment(el: Element): boolean {
+  // Absolute reject: Feed posts, stories, newsfeed cards are NEVER comments!
+  if (isFeedPost(el)) return false;
+
+  const rawText = (el.textContent || "").trim();
+  if (PROFILE_SECTION_RE.test(rawText)) return false;
+  if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more|আরও\s*দেখুন)/i.test(rawText)) return false;
+  if (rawText.length > 2500) return false;
+
+  // Positive signal 1: standard Facebook comment aria-label
+  if (
+    el.matches('[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="এর মন্তব্য" i], [aria-label*="এর উত্তর" i]') ||
+    el.closest('[aria-label*="Comment by" i], [aria-label*="Reply by" i]') !== null
+  ) {
+    return true;
+  }
+
+  // Positive signal 2: comment ID in URL or data attribute
+  if (extractCommentId(el)) return true;
+
+  // Positive signal 3: has comment author controls (Edit/Delete)
+  if (hasAuthorOnlyControls(el)) return true;
+
+  // Positive signal 4: Must have Reply button nearby (Comments have Reply, Posts NEVER have Reply!)
+  const roots: Element[] = [el];
+  if (el.parentElement) roots.push(el.parentElement);
+  if (el.parentElement?.parentElement) roots.push(el.parentElement.parentElement);
+
+  for (const root of roots) {
+    for (const node of root.querySelectorAll<HTMLElement>("[aria-label]")) {
+      const label = (node.getAttribute("aria-label") || "").trim().toLowerCase();
+      if (
+        label.includes("reply to") ||
+        label.includes("এর উত্তর দিন") ||
+        label === "reply" ||
+        label === "উত্তর দিন"
+      ) {
+        return true;
+      }
+    }
+    for (const btn of root.querySelectorAll('[role="button"], button, span')) {
+      const t = (btn.textContent || "").trim().toLowerCase();
+      if (t === "reply" || t === "উত্তর দিন" || t === "উত্তর" || t === "রিপ্লাই") return true;
+    }
+  }
+
+  return false;
+}
+
 // ------------------------------------------------------------------ comment ID extraction
 
-/**
- * Try to extract the Facebook comment ID from the DOM element.
- * Used to build a `?comment_id=…` deep-link so "Open Post" lands on the
- * exact comment rather than just the top of the page.
- */
 function extractCommentId(el: Element): string | undefined {
-  // data-commentid attribute (some FB versions)
   const byAttr = el.querySelector("[data-commentid]");
   if (byAttr) return byAttr.getAttribute("data-commentid") || undefined;
 
-  // Anchor with comment_id in query string
   for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     try {
       const u = new URL(a.getAttribute("href") || "", location.href);
       const cid = u.searchParams.get("comment_id");
       if (cid) return cid;
-    } catch (_) { /* ignore */ }
-  }
-
-  // /comment/<id> path segment
-  for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    try {
-      const u = new URL(a.getAttribute("href") || "", location.href);
       const m = u.pathname.match(/\/comment\/(\d+)/);
       if (m) return m[1];
-    } catch (_) { /* ignore */ }
+    } catch (_) {}
   }
 
   return undefined;
@@ -576,10 +765,8 @@ function extractCommentId(el: Element): string | undefined {
 
 // ------------------------------------------------------------------ processed set
 
-/** Prevents double-processing any element even when Facebook re-parents nodes. */
 let processed = new WeakSet<Element>();
 
-// When storage is cleared in the popup, reset the in-memory set so comments can be re-captured
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes["fb_comments"]) {
     const newVal = changes["fb_comments"].newValue as unknown[] | undefined;
@@ -593,32 +780,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // ------------------------------------------------------------------ core
 
 /**
- * Given a candidate element (potential comment root), extract and save the comment,
- * marking whether it belongs to the logged-in user (isMyComment).
+ * Given a candidate element, extract and save the comment.
+ * STRICT: Only logged-in user comments (isMyComment === true) are saved in passive mode!
  */
 function tryProcessComment(el: Element): boolean {
   if (processed.has(el)) return false;
 
-  const myId = resolveMyProfileId();
-
-  // ── Gate 1: only process elements that look like real comment bubbles.
+  // Gate 1: Reject posts and non-comments
   if (!isLikelyComment(el)) {
     processed.add(el);
     return false;
   }
 
+  const myId = resolveMyProfileId();
   const author = findBestAuthor(el);
   if (!author.link || !author.path) return false;
 
-  const isMyComment = myId ? sameProfile(author.path, myId) : false;
-  const text = extractCommentText(el, author.name, author.link);
+  // Determine if it's the logged-in user's comment
+  let isMyComment = myId ? sameProfile(author.path, myId) : false;
+  if (!isMyComment && myProfileName && author.name && author.name.toLowerCase() === myProfileName.toLowerCase()) {
+    isMyComment = true;
+  }
+  if (!isMyComment && hasAuthorOnlyControls(el)) {
+    isMyComment = true;
+  }
 
-  // Mark processed before sending
-  processed.add(el);
-
-  if (!text) {
+  // ── USER REQUIREMENT: Only save user's own comments in passive tracking!
+  if (!isMyComment) {
+    processed.add(el);
     return false;
   }
+
+  const text = extractCommentText(el, author.name, author.link);
+  processed.add(el);
+
+  if (!text) return false;
 
   const postUrl = extractPostUrl(el);
   const commentDate = extractCommentDate(el);
@@ -632,44 +828,33 @@ function tryProcessComment(el: Element): boolean {
     comment: {
       text,
       postUrl,
-      authorName: (isMyComment && myProfileName) ? myProfileName : (author.name || "Facebook User"),
-      authorId: author.path,
+      authorName: myProfileName || author.name || "You",
+      authorId: myId || author.path,
       authorProfileUrl: author.link.href,
-      isMyComment,
+      isMyComment: true,
       isReply,
       ...(commentDate ? { commentDate } : {}),
       ...(commentId ? { commentId } : {}),
     },
   };
 
-  chrome.runtime.sendMessage({ target: "background", ...payload }).catch(() => {
-    // Extension may have reloaded — not critical
-  });
-
+  chrome.runtime.sendMessage({ target: "background", ...payload }).catch(() => {});
   return true;
 }
 
 // ------------------------------------------------------------------ subtree scan
 
-/**
- * Scan a DOM subtree for potential comment nodes.
- *
- * Strategy: find "Like" / "Reply" role=button elements, then walk UP from
- * each to find the smallest enclosing element that also contains a profile
- * link — that enclosing element is very likely the comment bubble.
- *
- * This is more reliable than starting from a profile link because:
- *   1. It guarantees the Like/Reply buttons are inside (or very close to) the candidate.
- *   2. Profile page sections ("Works at …") never have these exact buttons.
- */
 function scanSubtree(root: Element): void {
+  // If root is a whole feed post, do not scan it as a comment itself
   const seenCandidates = new WeakSet<Element>();
 
-  // Strategy 1: Directly inspect [role="article"] elements (Facebook standard comment bubbles)
+  // Strategy 1: Inspect [role="article"] elements that are NOT outer feed posts
   const articles: Element[] = [];
-  if (root.getAttribute?.("role") === "article") articles.push(root);
+  if (root.getAttribute?.("role") === "article" && !isFeedPost(root)) {
+    articles.push(root);
+  }
   for (const art of root.querySelectorAll<HTMLElement>('[role="article"]')) {
-    articles.push(art);
+    if (!isFeedPost(art)) articles.push(art);
   }
   for (const art of articles) {
     if (!seenCandidates.has(art) && !processed.has(art)) {
@@ -678,26 +863,27 @@ function scanSubtree(root: Element): void {
     }
   }
 
-  // Strategy 2: Find all role="button" or aria-label elements that look like comment actions
+  // Strategy 2: Find all Reply buttons or comment action nodes
   const actionNodes: HTMLElement[] = [];
   for (const el of root.querySelectorAll<HTMLElement>('[role="button"], [aria-label]')) {
     const ariaLabel = (el.getAttribute("aria-label") || "").trim().toLowerCase();
     const textContent = (el.textContent || "").trim().toLowerCase();
-    const isLikeOrReply =
-      COMMENT_ACTION_RE.test(textContent) ||
-      COMMENT_ACTION_RE.test(ariaLabel) ||
-      textContent === "উত্তর দিন" ||
-      textContent === "পছন্দ করুন" ||
+    const isReplyAction =
       ariaLabel.includes("reply to") ||
-      ariaLabel.includes("উত্তর দিন");
-    if (isLikeOrReply) actionNodes.push(el);
+      ariaLabel.includes("এর উত্তর দিন") ||
+      ariaLabel === "reply" ||
+      textContent === "reply" ||
+      textContent === "উত্তর দিন" ||
+      textContent === "রিপ্লাই" ||
+      ariaLabel.includes("edit or delete");
+    if (isReplyAction) actionNodes.push(el);
   }
 
   for (const actionEl of actionNodes) {
-    // Walk up from the action button to find a comment bubble
     let candidate: Element | null = actionEl.parentElement;
-    for (let depth = 0; depth < 12 && candidate && candidate !== document.body; depth++) {
+    for (let depth = 0; depth < 10 && candidate && candidate !== document.body; depth++) {
       if (seenCandidates.has(candidate) || processed.has(candidate)) break;
+      if (isFeedPost(candidate)) break;
 
       const text = (candidate.textContent || "").trim();
       if (text.length > 2500) {
@@ -705,7 +891,6 @@ function scanSubtree(root: Element): void {
         continue;
       }
 
-      // Check if candidate contains a profile link
       let hasProfileLink = false;
       for (const a of candidate.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const path = profilePathFromHref(a.getAttribute("href") || "");
@@ -722,6 +907,88 @@ function scanSubtree(root: Element): void {
     }
   }
 }
+
+// ------------------------------------------------------------------ comment submission listener
+
+function extractInputTextWithEmojis(box: HTMLElement): string {
+  let result = "";
+  function walk(cur: Node) {
+    if (cur.nodeType === Node.TEXT_NODE) {
+      result += cur.textContent || "";
+      return;
+    }
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      const el = cur as HTMLElement;
+      if (el.tagName === "IMG") {
+        const alt = el.getAttribute("alt") || "";
+        if (alt) result += " " + alt + " ";
+        return;
+      }
+      for (let child = el.firstChild; child; child = child.nextSibling) {
+        walk(child);
+      }
+    }
+  }
+  walk(box);
+  return cleanCommentText(result);
+}
+
+// Instant capture when the user types/pastes a comment or emoji and presses Enter
+document.addEventListener(
+  "keydown",
+  (e: KeyboardEvent) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    const isTextbox =
+      target.matches('[role="textbox"][contenteditable="true"], [contenteditable="true"], textarea') ||
+      target.closest('[role="textbox"][contenteditable="true"]') !== null;
+    if (!isTextbox) return;
+
+    const box = target.matches('[role="textbox"]') ? target : (target.closest('[role="textbox"]') || target);
+    const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
+    const placeholder = (box.getAttribute("placeholder") || "").toLowerCase();
+
+    const isCommentBox =
+      label.includes("comment") ||
+      label.includes("মন্তব্য") ||
+      label.includes("write") ||
+      placeholder.includes("comment") ||
+      placeholder.includes("মন্তব্য") ||
+      box.closest('form, [aria-label*="comment" i], [aria-label*="মন্তব্য" i]') !== null;
+
+    if (!isCommentBox) return;
+
+    const text = extractInputTextWithEmojis(box as HTMLElement);
+    if (!text) return;
+
+    const postContainer = box.closest('[role="article"], div[data-pagelet*="FeedUnit"], div[role="main"]') || box;
+    const postUrl = extractPostUrl(postContainer);
+
+    const myId = resolveMyProfileId() || "/me";
+    const myName = myProfileName || "You";
+
+    console.debug("[FB Helper] User submitted comment:", text, "on post:", postUrl);
+
+    const payload: CommentMessage = {
+      type: "SAVE_COMMENT",
+      comment: {
+        text,
+        postUrl,
+        authorName: myName,
+        authorId: myId,
+        authorProfileUrl: location.origin + (myId.startsWith("/") ? myId : `/${myId}`),
+        isMyComment: true,
+        isReply: box.closest('[role="group"]') !== null,
+      },
+    };
+
+    chrome.runtime.sendMessage({ target: "background", ...payload }).catch(() => {});
+  },
+  true // Capture phase: capture content before Facebook clears the input on Enter!
+);
 
 // ------------------------------------------------------------------ MutationObserver
 
@@ -743,9 +1010,6 @@ function startObserver(): void {
 // ------------------------------------------------------------------ SPA navigation
 
 function handleNavigation(): void {
-  // Reset profile name but keep the ID — it should not change between pages
-  // unless the user switches accounts.  If they do, the extension will need
-  // to be reloaded (an acceptable limitation).
   myProfileName = "";
   scanSubtree(document.body);
 }

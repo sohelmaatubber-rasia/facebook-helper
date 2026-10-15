@@ -194,13 +194,25 @@
   }
   async function getComments() {
     const result = await chrome.storage.local.get(COMMENTS_KEY);
-    return result[COMMENTS_KEY] ?? [];
+    const rawList = result[COMMENTS_KEY] ?? [];
+    const sanitized = rawList.filter((c) => {
+      if (!c.text) return false;
+      if (/^(Facebook\s*){2,}/i.test(c.text)) return false;
+      if (!c.isMyComment && (c.postUrl === "https://www.facebook.com/" || c.postUrl === "http://www.facebook.com/")) return false;
+      return true;
+    });
+    if (sanitized.length !== rawList.length) {
+      await chrome.storage.local.set({ [COMMENTS_KEY]: sanitized });
+    }
+    return sanitized;
   }
   async function saveComment(comment) {
-    const id = makeCommentId(comment.postUrl, comment.text, comment.authorId, comment.commentId);
+    const cleanText = comment.text.replace(/^(Facebook\s*)+/gi, "").trim();
+    if (!cleanText) return;
+    const id = makeCommentId(comment.postUrl, cleanText, comment.authorId, comment.commentId);
     const existing = await getComments();
     if (existing.some((c) => c.id === id)) return;
-    const saved = { ...comment, id, savedAt: Date.now() };
+    const saved = { ...comment, text: cleanText, id, savedAt: Date.now() };
     const updated = [saved, ...existing].slice(0, MAX_COMMENTS);
     await chrome.storage.local.set({ [COMMENTS_KEY]: updated });
   }

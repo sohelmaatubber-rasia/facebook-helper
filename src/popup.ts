@@ -340,8 +340,8 @@ const cmEl = {
   count: $("cmCount"),
 };
 
-/** Active filter: "all" comments or only "my" comments. */
-let currentFilter: "all" | "my" = "all";
+/** Active filter: "all" comments or only "my" comments. Defaults to "my" (user's comments). */
+let currentFilter: "all" | "my" = "my";
 
 /** In-memory copy of comments for fast search/sort without re-fetching. */
 let allComments: SavedComment[] = [];
@@ -550,7 +550,7 @@ function renderComments(): void {
       query
         ? "No comments match your search."
         : currentFilter === "my"
-        ? "No personal comments found yet."
+        ? "No personal comments tracked yet. When you comment on any Facebook post (even with emojis), it will appear here with the post link!"
         : "No comments found. Click 'Scan Post Comments' on a Facebook post!"
     }</p>`;
     return;

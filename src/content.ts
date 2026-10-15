@@ -1211,11 +1211,57 @@ function extractCommentDate(commentRoot: Element): string | undefined {
   return undefined;
 }
 
+function cleanFbUrl(u: URL): void {
+  u.searchParams.delete("__cft__");
+  u.searchParams.delete("__tn__");
+  u.searchParams.delete("ref");
+  u.searchParams.delete("notif_id");
+  u.searchParams.delete("notif_t");
+}
+
 function extractPostUrlFromPage(el?: Element): string {
   if (POST_HREF_RE.test(location.pathname + location.search)) {
     return location.origin + location.pathname + location.search;
   }
   if (el) {
+    let postRoot: Element | null = el.closest(
+      '[role="article"], div[data-pagelet*="FeedUnit"], div[data-ad-preview], div[data-ad-rendering]'
+    );
+    if (!postRoot) postRoot = el;
+
+    const candidates: { href: string; priority: number }[] = [];
+    for (const a of postRoot.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const rawHref = a.getAttribute("href") || "";
+      if (!rawHref || rawHref === "#") continue;
+      try {
+        const u = new URL(rawHref, location.href);
+        if (!u.hostname.includes("facebook.com")) continue;
+
+        const p = u.pathname;
+        if (p.includes("/posts/") || p.includes("pfbid") || p.includes("/permalink/") || p.includes("/share/p/")) {
+          cleanFbUrl(u);
+          candidates.push({ href: u.toString(), priority: 10 });
+          continue;
+        }
+        if (p.includes("/photo") || p.includes("/reel/") || p.includes("/watch/") || u.searchParams.has("story_fbid")) {
+          cleanFbUrl(u);
+          candidates.push({ href: u.toString(), priority: 8 });
+          continue;
+        }
+        const aria = (a.getAttribute("aria-label") || "").toLowerCase();
+        if (/\d+\s*(hr|min|hour|minute|day|sec|yr|h|m|s|d|w|ঘণ্টা|মিনিট|দিন)/.test(aria)) {
+          cleanFbUrl(u);
+          candidates.push({ href: u.toString(), priority: 9 });
+          continue;
+        }
+      } catch (_) {}
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.priority - a.priority);
+      return candidates[0].href;
+    }
+
     let cur: Element | null = el;
     while (cur && cur !== document.body) {
       if (cur.tagName === "A") {
@@ -1224,18 +1270,16 @@ function extractPostUrlFromPage(el?: Element): string {
           if (POST_HREF_RE.test(href)) return href;
         } catch (_) {}
       }
-      for (const a of cur.querySelectorAll<HTMLAnchorElement>(":scope > a[href], :scope > * > a[href]")) {
-        if (POST_HREF_RE.test(a.href)) return a.href;
-      }
       cur = cur.parentElement;
     }
   }
   return location.href;
 }
 
-/** Clean up text by removing extra spaces and bullet characters */
+/** Clean up text by removing extra spaces, repeated 'Facebook' tokens, and bullet characters */
 function cleanCommentText(text: string): string {
   let cleaned = text.replace(/\s{2,}/g, " ").trim();
+  cleaned = cleaned.replace(/^(Facebook\s*)+/gi, "").trim();
   cleaned = cleaned.replace(/^[·\-–—•]+\s*/, "").replace(/\s*[·\-–—•]+$/, "").trim();
   return cleaned;
 }
@@ -1516,6 +1560,31 @@ function resolveLoggedInUserId(): string | null {
   return null;
 }
 
+function isFeedPost(el: Element): boolean {
+  if (
+    el.querySelector(
+      '[aria-label*="Leave a comment" i], ' +
+      '[aria-label*="মন্তব্য লিখুন" i], ' +
+      '[aria-label*="Send this to friends" i], ' +
+      '[aria-label*="Share" i], ' +
+      '[aria-label*="শেয়ার" i], ' +
+      '[data-ad-preview], [data-ad-rendering]'
+    ) !== null
+  ) {
+    return true;
+  }
+  if (el.matches('[data-pagelet*="FeedUnit"], [role="feed"] > div, div[data-ad-preview]')) {
+    return true;
+  }
+  if (el.querySelectorAll('[role="article"]').length > 1) {
+    return true;
+  }
+  if (el.querySelector('a[aria-label="Facebook" i], a[href^="/home.php"]')) {
+    return true;
+  }
+  return false;
+}
+
 function sameProfile(a: string, b: string): boolean {
   return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
 }
@@ -1558,11 +1627,9 @@ async function scanPostComments(
 
     const candidateRoots = new Set<Element>();
 
-    // 1. All [role="article"] elements inside postContainer
+    // 1. All [role="article"] elements inside postContainer that are real comments (NOT feed posts)
     for (const art of postContainer.querySelectorAll<HTMLElement>('[role="article"]')) {
-      if (art === postContainer) continue;
-      // Skip outer post container if it holds multiple comment articles
-      if (art.querySelectorAll('[role="article"]').length > 2) continue;
+      if (art === postContainer || isFeedPost(art)) continue;
       candidateRoots.add(art);
     }
 
@@ -1594,6 +1661,7 @@ async function scanPostComments(
       if (
         closestArt &&
         closestArt !== postContainer &&
+        !isFeedPost(closestArt) &&
         closestArt.querySelectorAll('[role="article"]').length <= 2 &&
         postContainer.contains(closestArt)
       ) {
@@ -1604,6 +1672,7 @@ async function scanPostComments(
       // Walk up until an ancestor contains a valid author profile link
       let candidate: Element | null = el.parentElement;
       for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
+        if (isFeedPost(candidate)) break;
         let hasAuthor = false;
         for (const a of candidate.querySelectorAll<HTMLAnchorElement>("a[href]")) {
           if (profilePathFromHref(a.getAttribute("href") || "")) {
