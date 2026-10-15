@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Facebook Helper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <h2>Facebook Helper</h2>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" id="tabPhotos">📷 Photos</button>
+        <button class="tab-btn" id="tabComments">💬 My Comments</button>
+    </div>
+
+    <!-- ==================== Photo Downloader Tab ==================== -->
+    <section id="sectionPhotos">
+        <button id="detectBtn">Detect Photos</button>
+
+        <p>Photos Found: <strong id="found">0</strong></p>
+        <p id="warning" class="warning" hidden></p>
+
+        <button id="collectBtn" hidden>Collect All Photos (opens viewer)</button>
+        <button id="cancelBtn" hidden>Cancel Collection</button>
+        <button id="clearBtn" hidden>✕ Clear Collected Photos</button>
+
+        <button id="downloadBtn" disabled>Download Photos (ZIP)</button>
+        <button id="directBtn" disabled>Download without ZIP</button>
+
+        <progress id="bar" max="100" value="0"></progress>
+        <p>Progress: <span id="pct">0</span>%</p>
+
+        <p>Status: <span id="status">Ready</span></p>
+        <pre id="summary" class="summary"></pre>
+    </section>
+
+    <!-- ==================== Comment Manager Tab ==================== -->
+    <section id="sectionComments" hidden>
+
+        <!-- Toolbar: search + sort + filter -->
+        <div class="cm-toolbar">
+            <input type="search" id="cmSearch" class="cm-search" placeholder="Search comments…" autocomplete="off">
+            <select id="cmSort" class="cm-select" title="Sort order">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+            </select>
+        </div>
+
+        <!-- Status messages -->
+        <p id="cmStatus" class="cm-status" hidden></p>
+
+        <!-- Comment list -->
+        <div id="cmList" class="cm-list" aria-live="polite">
+            <p class="cm-empty">Loading…</p>
+        </div>
+
+        <!-- Footer actions -->
+        <div class="cm-footer">
+            <button id="cmRefresh" class="cm-btn-sm">↻ Refresh</button>
+            <button id="cmClearAll" class="cm-btn-sm cm-btn-danger">Clear All</button>
+            <span id="cmCount" class="cm-count"></span>
+        </div>
+    </section>
+
+    <script src="popup.js"></script>
+</body>
+</html>
