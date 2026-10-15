@@ -16,13 +16,17 @@
         pathname = decodeURIComponent(pathname);
       } catch (_) {
       }
-      if (NON_USER_PATH_RE.test(pathname)) return "";
+      const groupUserM = pathname.match(/\/groups\/[^/]+\/user\/(\d+)/);
+      if (groupUserM) return `/profile.php?id=${groupUserM[1]}`;
       if (pathname === "/profile.php") {
         const id = u.searchParams.get("id");
         return id ? `/profile.php?id=${id}` : "";
       }
       const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
       if (peopleM) return `/profile.php?id=${peopleM[1]}`;
+      const pageM = pathname.match(/^\/pages\/[^/]+\/(\d+)/);
+      if (pageM) return `/profile.php?id=${pageM[1]}`;
+      if (NON_USER_PATH_RE.test(pathname)) return "";
       const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
       const firstSegment = segments[0];
       if (firstSegment && !NON_USER_PATH_RE.test(`/${firstSegment}`)) {
@@ -159,8 +163,8 @@
           const linkText = (el.textContent || "").trim();
           if (linkText === authorName || UI_TEXT_RE.test(linkText)) return;
         }
-        const nestedArt = el.closest('[role="article"]');
-        if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+        const replyGroup = el.closest('[role="group"]');
+        if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) return;
         if (tag === "BR") {
           result += "\n";
           return;
@@ -194,8 +198,8 @@
       const t = (dirEl.textContent || "").trim();
       if (t === authorName || UI_TEXT_RE.test(t)) continue;
       if (dirEl.closest('button, [role="button"]') !== null) continue;
-      const nestedArt = dirEl.closest('[role="article"]');
-      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+      const replyGroup = dirEl.closest('[role="group"]');
+      if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) continue;
       const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
       if (!isChildOfCandidate) {
         textCandidates.push(dirEl);
@@ -284,6 +288,9 @@
   var PROFILE_SECTION_RE = /^(works?\s+at|studied?\s+at|lives?\s+in|from\s+|education|see\s+all\s+(photos|friends|videos|check-ins|likes|posts)|went\s+to|in\s+a\s+relationship|married|single|following|followers?|mutual\s+friend)/i;
   var COMMENT_ACTION_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
   function isLikelyComment(el) {
+    if (el.getAttribute("role") === "article" || el.closest('[role="article"]') !== null || el.matches('[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="\u098F\u09B0 \u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], [aria-label*="\u098F\u09B0 \u0989\u09A4\u09CD\u09A4\u09B0" i]')) {
+      return true;
+    }
     const rawText = (el.textContent || "").trim();
     if (PROFILE_SECTION_RE.test(rawText)) return false;
     if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more|আরও\s*দেখুন)/i.test(rawText)) return false;
@@ -374,11 +381,22 @@
   }
   function scanSubtree(root) {
     const seenCandidates = /* @__PURE__ */ new WeakSet();
+    const articles = [];
+    if (root.getAttribute?.("role") === "article") articles.push(root);
+    for (const art of root.querySelectorAll('[role="article"]')) {
+      articles.push(art);
+    }
+    for (const art of articles) {
+      if (!seenCandidates.has(art) && !processed.has(art)) {
+        seenCandidates.add(art);
+        tryProcessComment(art);
+      }
+    }
     const actionNodes = [];
     for (const el of root.querySelectorAll('[role="button"], [aria-label]')) {
       const ariaLabel = (el.getAttribute("aria-label") || "").trim().toLowerCase();
       const textContent = (el.textContent || "").trim().toLowerCase();
-      const isLikeOrReply = COMMENT_ACTION_RE.test(textContent) || COMMENT_ACTION_RE.test(ariaLabel) || textContent === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || textContent === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8";
+      const isLikeOrReply = COMMENT_ACTION_RE.test(textContent) || COMMENT_ACTION_RE.test(ariaLabel) || textContent === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || textContent === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8" || ariaLabel.includes("reply to") || ariaLabel.includes("\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8");
       if (isLikeOrReply) actionNodes.push(el);
     }
     for (const actionEl of actionNodes) {
@@ -386,7 +404,7 @@
       for (let depth = 0; depth < 12 && candidate && candidate !== document.body; depth++) {
         if (seenCandidates.has(candidate) || processed.has(candidate)) break;
         const text = (candidate.textContent || "").trim();
-        if (text.length === 0 || text.length > 1500) {
+        if (text.length > 2500) {
           candidate = candidate.parentElement;
           continue;
         }

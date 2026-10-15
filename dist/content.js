@@ -799,13 +799,17 @@
         pathname = decodeURIComponent(pathname);
       } catch (_) {
       }
-      if (NON_USER_PATH_RE.test(pathname)) return "";
+      const groupUserM = pathname.match(/\/groups\/[^/]+\/user\/(\d+)/);
+      if (groupUserM) return `/profile.php?id=${groupUserM[1]}`;
       if (pathname === "/profile.php") {
         const id = u.searchParams.get("id");
         return id ? `/profile.php?id=${id}` : "";
       }
       const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
       if (peopleM) return `/profile.php?id=${peopleM[1]}`;
+      const pageM = pathname.match(/^\/pages\/[^/]+\/(\d+)/);
+      if (pageM) return `/profile.php?id=${pageM[1]}`;
+      if (NON_USER_PATH_RE.test(pathname)) return "";
       const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
       const firstSegment = segments[0];
       if (firstSegment && !NON_USER_PATH_RE.test(`/${firstSegment}`)) {
@@ -941,8 +945,8 @@
           const linkText = (el.textContent || "").trim();
           if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return;
         }
-        const nestedArt = el.closest('[role="article"]');
-        if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+        const replyGroup = el.closest('[role="group"]');
+        if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) return;
         if (tag === "BR") {
           result += "\n";
           return;
@@ -976,8 +980,8 @@
       const t = (dirEl.textContent || "").trim();
       if (t === authorName || UI_TEXT_CLEAN_RE.test(t)) continue;
       if (dirEl.closest('button, [role="button"]') !== null) continue;
-      const nestedArt = dirEl.closest('[role="article"]');
-      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+      const replyGroup = dirEl.closest('[role="group"]');
+      if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) continue;
       const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
       if (!isChildOfCandidate) {
         textCandidates.push(dirEl);
@@ -1087,27 +1091,17 @@
   async function scanPostComments(autoExpand = true, maxExpandClicks = 8) {
     try {
       let postContainer = document.body;
-      const modalDialog = document.querySelector('div[role="dialog"]');
-      if (modalDialog && modalDialog.querySelector(
-        '[role="article"], [aria-label*="comment" i], [aria-label*="\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], [role="button"], form'
+      const modalDialog = document.querySelector(
+        'div[role="dialog"], [aria-modal="true"], div[data-pagelet*="Tahoe"], div[data-pagelet*="MediaViewer"]'
+      );
+      if (modalDialog && modalDialog.getBoundingClientRect().width > 300 && modalDialog.querySelector(
+        '[aria-label*="comment" i], [aria-label*="\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], form, [contenteditable="true"]'
       )) {
         postContainer = modalDialog;
       } else {
-        const articles = document.querySelectorAll('[role="article"]');
-        if (articles.length > 1) {
-          const vMid = window.innerHeight / 2;
-          let closest = null;
-          let minDistance = Infinity;
-          for (const art of articles) {
-            if (art.parentElement?.closest('[role="article"]')) continue;
-            const rect = art.getBoundingClientRect();
-            const dist = Math.abs(rect.top + rect.height / 2 - vMid);
-            if (dist < minDistance) {
-              minDistance = dist;
-              closest = art;
-            }
-          }
-          if (closest) postContainer = closest;
+        const main = document.querySelector('div[role="main"], main');
+        if (main && main.querySelector('[aria-label*="comment" i], [aria-label*="\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], [contenteditable="true"]')) {
+          postContainer = main;
         }
       }
       const postUrl = extractPostUrlFromPage(postContainer);
@@ -1117,28 +1111,28 @@
       }
       const candidateRoots = /* @__PURE__ */ new Set();
       for (const art of postContainer.querySelectorAll('[role="article"]')) {
-        if (art !== postContainer) {
-          candidateRoots.add(art);
-        }
+        if (art === postContainer) continue;
+        if (art.querySelectorAll('[role="article"]').length > 2) continue;
+        candidateRoots.add(art);
+      }
+      for (const el of postContainer.querySelectorAll(
+        '[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="\u098F\u09B0 \u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF" i], [aria-label*="\u098F\u09B0 \u0989\u09A4\u09CD\u09A4\u09B0" i]'
+      )) {
+        candidateRoots.add(el);
       }
       const actionNodes = postContainer.querySelectorAll('[role="button"], [aria-label]');
       for (const el of actionNodes) {
         const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
         const text = (el.textContent || "").trim().toLowerCase();
-        const isAction = COMMENT_ACTION_LABEL_RE.test(text) || COMMENT_ACTION_LABEL_RE.test(aria) || text === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || text === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8";
+        const isAction = COMMENT_ACTION_LABEL_RE.test(text) || COMMENT_ACTION_LABEL_RE.test(aria) || text === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || text === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8" || text === "\u09B2\u09BE\u0987\u0995" || text === "\u09B0\u09BF\u09AA\u09CD\u09B2\u09BE\u0987" || aria.includes("reply to") || aria.includes("\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8");
         if (!isAction) continue;
         const closestArt = el.closest('[role="article"]');
-        if (closestArt && closestArt !== postContainer && postContainer.contains(closestArt)) {
+        if (closestArt && closestArt !== postContainer && closestArt.querySelectorAll('[role="article"]').length <= 2 && postContainer.contains(closestArt)) {
           candidateRoots.add(closestArt);
           continue;
         }
         let candidate = el.parentElement;
         for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
-          const cText = (candidate.textContent || "").trim();
-          if (cText.length === 0 || cText.length > 2500) {
-            candidate = candidate.parentElement;
-            continue;
-          }
           let hasAuthor = false;
           for (const a of candidate.querySelectorAll("a[href]")) {
             if (profilePathFromHref(a.getAttribute("href") || "")) {

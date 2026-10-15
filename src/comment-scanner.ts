@@ -77,7 +77,9 @@ function profilePathFromHref(href: string): string {
       pathname = decodeURIComponent(pathname);
     } catch (_) {}
 
-    if (NON_USER_PATH_RE.test(pathname)) return "";
+    // Group user link: /groups/123/user/456
+    const groupUserM = pathname.match(/\/groups\/[^/]+\/user\/(\d+)/);
+    if (groupUserM) return `/profile.php?id=${groupUserM[1]}`;
 
     // /profile.php?id=123456
     if (pathname === "/profile.php") {
@@ -88,6 +90,12 @@ function profilePathFromHref(href: string): string {
     // /people/username/123456 or /people/unicode-name/123456
     const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
     if (peopleM) return `/profile.php?id=${peopleM[1]}`;
+
+    // /pages/pagename/123456
+    const pageM = pathname.match(/^\/pages\/[^/]+\/(\d+)/);
+    if (pageM) return `/profile.php?id=${pageM[1]}`;
+
+    if (NON_USER_PATH_RE.test(pathname)) return "";
 
     // Extract first segment after /
     const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
@@ -290,8 +298,9 @@ function extractFallbackTextWithEmojis(
         if (linkText === authorName || UI_TEXT_RE.test(linkText)) return;
       }
 
-      const nestedArt = el.closest('[role="article"]');
-      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+      // Skip if inside a nested reply thread
+      const replyGroup = el.closest('[role="group"]');
+      if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) return;
 
       if (tag === "BR") {
         result += "\n";
@@ -345,8 +354,9 @@ function extractCommentText(
     if (t === authorName || UI_TEXT_RE.test(t)) continue;
     if (dirEl.closest('button, [role="button"]') !== null) continue;
 
-    const nestedArt = dirEl.closest('[role="article"]');
-    if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+    // Skip if inside a nested reply thread
+    const replyGroup = dirEl.closest('[role="group"]');
+    if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) continue;
 
     const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
     if (!isChildOfCandidate) {
@@ -485,6 +495,15 @@ const PROFILE_SECTION_RE = /^(works?\s+at|studied?\s+at|lives?\s+in|from\s+|educ
 const COMMENT_ACTION_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
 
 function isLikelyComment(el: Element): boolean {
+  // ── Fast-accept: standard Facebook comment element
+  if (
+    el.getAttribute("role") === "article" ||
+    el.closest('[role="article"]') !== null ||
+    el.matches('[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="এর মন্তব্য" i], [aria-label*="এর উত্তর" i]')
+  ) {
+    return true;
+  }
+
   // ── Fast-reject: profile-section text patterns
   const rawText = (el.textContent || "").trim();
 
@@ -646,7 +665,20 @@ function tryProcessComment(el: Element): boolean {
 function scanSubtree(root: Element): void {
   const seenCandidates = new WeakSet<Element>();
 
-  // Find all role="button" or aria-label elements that look like comment actions
+  // Strategy 1: Directly inspect [role="article"] elements (Facebook standard comment bubbles)
+  const articles: Element[] = [];
+  if (root.getAttribute?.("role") === "article") articles.push(root);
+  for (const art of root.querySelectorAll<HTMLElement>('[role="article"]')) {
+    articles.push(art);
+  }
+  for (const art of articles) {
+    if (!seenCandidates.has(art) && !processed.has(art)) {
+      seenCandidates.add(art);
+      tryProcessComment(art);
+    }
+  }
+
+  // Strategy 2: Find all role="button" or aria-label elements that look like comment actions
   const actionNodes: HTMLElement[] = [];
   for (const el of root.querySelectorAll<HTMLElement>('[role="button"], [aria-label]')) {
     const ariaLabel = (el.getAttribute("aria-label") || "").trim().toLowerCase();
@@ -655,7 +687,9 @@ function scanSubtree(root: Element): void {
       COMMENT_ACTION_RE.test(textContent) ||
       COMMENT_ACTION_RE.test(ariaLabel) ||
       textContent === "উত্তর দিন" ||
-      textContent === "পছন্দ করুন";
+      textContent === "পছন্দ করুন" ||
+      ariaLabel.includes("reply to") ||
+      ariaLabel.includes("উত্তর দিন");
     if (isLikeOrReply) actionNodes.push(el);
   }
 
@@ -666,13 +700,12 @@ function scanSubtree(root: Element): void {
       if (seenCandidates.has(candidate) || processed.has(candidate)) break;
 
       const text = (candidate.textContent || "").trim();
-      // Reject too-large elements (entire feed sections) or empty ones
-      if (text.length === 0 || text.length > 1500) {
+      if (text.length > 2500) {
         candidate = candidate.parentElement;
         continue;
       }
 
-      // This sized element must also contain a profile link to be a comment bubble
+      // Check if candidate contains a profile link
       let hasProfileLink = false;
       for (const a of candidate.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const path = profilePathFromHref(a.getAttribute("href") || "");

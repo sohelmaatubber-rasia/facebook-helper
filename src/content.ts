@@ -1133,7 +1133,9 @@ function profilePathFromHref(href: string): string {
       pathname = decodeURIComponent(pathname);
     } catch (_) {}
 
-    if (NON_USER_PATH_RE.test(pathname)) return "";
+    // Group user link: /groups/123/user/456
+    const groupUserM = pathname.match(/\/groups\/[^/]+\/user\/(\d+)/);
+    if (groupUserM) return `/profile.php?id=${groupUserM[1]}`;
 
     // /profile.php?id=123456
     if (pathname === "/profile.php") {
@@ -1144,6 +1146,12 @@ function profilePathFromHref(href: string): string {
     // /people/username/123456 or /people/unicode-name/123456
     const peopleM = pathname.match(/^\/people\/[^/]+\/(\d+)/);
     if (peopleM) return `/profile.php?id=${peopleM[1]}`;
+
+    // /pages/pagename/123456
+    const pageM = pathname.match(/^\/pages\/[^/]+\/(\d+)/);
+    if (pageM) return `/profile.php?id=${pageM[1]}`;
+
+    if (NON_USER_PATH_RE.test(pathname)) return "";
 
     // Extract first segment after /
     const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
@@ -1316,8 +1324,9 @@ function extractFallbackTextWithEmojis(
         if (linkText === authorName || UI_TEXT_CLEAN_RE.test(linkText)) return;
       }
 
-      const nestedArt = el.closest('[role="article"]');
-      if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) return;
+      // Skip if inside a nested reply thread
+      const replyGroup = el.closest('[role="group"]');
+      if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) return;
 
       if (tag === "BR") {
         result += "\n";
@@ -1372,8 +1381,9 @@ function extractCommentTextContent(
     if (t === authorName || UI_TEXT_CLEAN_RE.test(t)) continue;
     if (dirEl.closest('button, [role="button"]') !== null) continue;
 
-    const nestedArt = dirEl.closest('[role="article"]');
-    if (nestedArt && nestedArt !== commentRoot && commentRoot.contains(nestedArt)) continue;
+    // Skip if inside a nested reply thread
+    const replyGroup = dirEl.closest('[role="group"]');
+    if (replyGroup && replyGroup !== commentRoot && commentRoot.contains(replyGroup)) continue;
 
     const isChildOfCandidate = textCandidates.some((c) => c.contains(dirEl));
     if (!isChildOfCandidate) {
@@ -1517,31 +1527,25 @@ async function scanPostComments(
   try {
     let postContainer: HTMLElement = document.body;
 
-    // Check if post is opened in a modal dialog overlay
-    const modalDialog = document.querySelector<HTMLElement>('div[role="dialog"]');
+    // Check if post is opened in a modal dialog / media viewer overlay
+    const modalDialog = document.querySelector<HTMLElement>(
+      'div[role="dialog"], [aria-modal="true"], div[data-pagelet*="Tahoe"], div[data-pagelet*="MediaViewer"]'
+    );
     if (
       modalDialog &&
+      modalDialog.getBoundingClientRect().width > 300 &&
       modalDialog.querySelector(
-        '[role="article"], [aria-label*="comment" i], [aria-label*="মন্তব্য" i], [role="button"], form'
+        '[aria-label*="comment" i], [aria-label*="মন্তব্য" i], form, [contenteditable="true"]'
       )
     ) {
       postContainer = modalDialog;
     } else {
-      const articles = document.querySelectorAll<HTMLElement>('[role="article"]');
-      if (articles.length > 1) {
-        const vMid = window.innerHeight / 2;
-        let closest: HTMLElement | null = null;
-        let minDistance = Infinity;
-        for (const art of articles) {
-          if (art.parentElement?.closest('[role="article"]')) continue;
-          const rect = art.getBoundingClientRect();
-          const dist = Math.abs(rect.top + rect.height / 2 - vMid);
-          if (dist < minDistance) {
-            minDistance = dist;
-            closest = art;
-          }
-        }
-        if (closest) postContainer = closest;
+      const main = document.querySelector<HTMLElement>('div[role="main"], main');
+      if (
+        main &&
+        main.querySelector('[aria-label*="comment" i], [aria-label*="মন্তব্য" i], [contenteditable="true"]')
+      ) {
+        postContainer = main;
       }
     }
 
@@ -1554,14 +1558,22 @@ async function scanPostComments(
 
     const candidateRoots = new Set<Element>();
 
-    // 1. All articles inside postContainer (excluding postContainer itself)
+    // 1. All [role="article"] elements inside postContainer
     for (const art of postContainer.querySelectorAll<HTMLElement>('[role="article"]')) {
-      if (art !== postContainer) {
-        candidateRoots.add(art);
-      }
+      if (art === postContainer) continue;
+      // Skip outer post container if it holds multiple comment articles
+      if (art.querySelectorAll('[role="article"]').length > 2) continue;
+      candidateRoots.add(art);
     }
 
-    // 2. Action buttons (Like, Reply, etc.)
+    // 2. Elements with aria-label indicating comment or reply
+    for (const el of postContainer.querySelectorAll<HTMLElement>(
+      '[aria-label*="Comment by" i], [aria-label*="Reply by" i], [aria-label*="এর মন্তব্য" i], [aria-label*="এর উত্তর" i]'
+    )) {
+      candidateRoots.add(el);
+    }
+
+    // 3. Action buttons (Like, Reply, etc.)
     const actionNodes = postContainer.querySelectorAll<HTMLElement>('[role="button"], [aria-label]');
     for (const el of actionNodes) {
       const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
@@ -1570,12 +1582,21 @@ async function scanPostComments(
         COMMENT_ACTION_LABEL_RE.test(text) ||
         COMMENT_ACTION_LABEL_RE.test(aria) ||
         text === "উত্তর দিন" ||
-        text === "পছন্দ করুন";
+        text === "পছন্দ করুন" ||
+        text === "লাইক" ||
+        text === "রিপ্লাই" ||
+        aria.includes("reply to") ||
+        aria.includes("উত্তর দিন");
 
       if (!isAction) continue;
 
       const closestArt = el.closest('[role="article"]');
-      if (closestArt && closestArt !== postContainer && postContainer.contains(closestArt)) {
+      if (
+        closestArt &&
+        closestArt !== postContainer &&
+        closestArt.querySelectorAll('[role="article"]').length <= 2 &&
+        postContainer.contains(closestArt)
+      ) {
         candidateRoots.add(closestArt);
         continue;
       }
@@ -1583,11 +1604,6 @@ async function scanPostComments(
       // Walk up until an ancestor contains a valid author profile link
       let candidate: Element | null = el.parentElement;
       for (let depth = 0; depth < 12 && candidate && candidate !== postContainer; depth++) {
-        const cText = (candidate.textContent || "").trim();
-        if (cText.length === 0 || cText.length > 2500) {
-          candidate = candidate.parentElement;
-          continue;
-        }
         let hasAuthor = false;
         for (const a of candidate.querySelectorAll<HTMLAnchorElement>("a[href]")) {
           if (profilePathFromHref(a.getAttribute("href") || "")) {
