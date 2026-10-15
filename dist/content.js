@@ -45,11 +45,6 @@
     box.right = Math.max(box.right, r.right);
     box.bottom = Math.max(box.bottom, r.bottom);
   }
-  function unionBox(items) {
-    const box = { ...items[0].rect };
-    items.forEach((i) => grow(box, i.rect));
-    return box;
-  }
   function visibleArea(box) {
     const w = Math.max(
       0,
@@ -180,24 +175,7 @@
     return clusters;
   }
   function splitBySet(clusters) {
-    const out = [];
-    for (const c of clusters) {
-      const firstPost = getPostContainer(c.items[0].img);
-      if (firstPost && c.items.every((i) => getPostContainer(i.img) === firstPost)) {
-        out.push(c);
-        continue;
-      }
-      const sets = new Set(c.items.map((i) => i.setId).filter(Boolean));
-      if (sets.size <= 1) {
-        out.push(c);
-        continue;
-      }
-      for (const s of sets) {
-        const items = c.items.filter((i) => i.setId === s);
-        out.push({ items, box: unionBox(items) });
-      }
-    }
-    return out;
+    return clusters;
   }
   function chooseTarget(clusters) {
     const p = new URLSearchParams(location.search);
@@ -299,9 +277,24 @@
     const byKey = /* @__PURE__ */ new Map();
     for (const p of list) {
       if (!p.url) continue;
-      const key = p.fbid ? `fbid_${p.fbid}` : dedupeKey(p.url);
-      const prev = byKey.get(key);
-      if (!prev || p.width >= prev.width) byKey.set(key, p);
+      const pathKey = dedupeKey(p.url);
+      const fbidKey = p.fbid ? `fbid_${p.fbid}` : "";
+      let existingKey = null;
+      if (fbidKey && byKey.has(fbidKey)) {
+        existingKey = fbidKey;
+      } else if (pathKey && byKey.has(pathKey)) {
+        existingKey = pathKey;
+      }
+      const key = fbidKey || pathKey;
+      if (existingKey) {
+        const prev = byKey.get(existingKey);
+        if (p.width >= prev.width) {
+          byKey.delete(existingKey);
+          byKey.set(key, p);
+        }
+      } else {
+        byKey.set(key, p);
+      }
     }
     return [...byKey.values()];
   }
@@ -400,7 +393,7 @@
       if (curId && curId !== prev.fbid) return img2;
       if (img2.naturalWidth) {
         const url = getBestImageUrl(img2);
-        if (url && dedupeKey(url) !== prev.key) return img2;
+        if (url && prev.urlPath && dedupeKey(url) !== prev.urlPath) return img2;
       }
       return null;
     };
@@ -495,13 +488,17 @@
       collected.set(first.key, first);
       progress(collected);
       const walk = async (direction) => {
-        let prev = first;
+        let cur = viewerImage();
+        let prev = {
+          fbid: currentFbid(),
+          urlPath: cur ? dedupeKey(getBestImageUrl(cur)) : dedupeKey(first.url)
+        };
         for (let i = 0; i < maxSteps && !window.__fbHelperCancel; i++) {
           const stepped = await step(direction, prev);
           if (!stepped) {
-            const cur = viewerImage();
-            if (cur) {
-              const settled = await settle(cur);
+            const cur2 = viewerImage();
+            if (cur2) {
+              const settled = await settle(cur2);
               const snap2 = snapshot(settled);
               if (snap2.url && !collected.has(snap2.key)) {
                 collected.set(snap2.key, snap2);
@@ -515,17 +512,45 @@
             return;
           }
           collected.set(snap.key, snap);
-          prev = snap;
+          prev = {
+            fbid: snap.fbid,
+            urlPath: dedupeKey(snap.url)
+          };
           progress(collected);
         }
       };
       await walk("next");
       if ((wasInViewer || expected && collected.size < expected) && !window.__fbHelperCancel) {
-        for (let i = 0; i < maxSteps && currentFbid() !== first.fbid; i++) {
-          const img = await step("prev", { key: "", fbid: currentFbid() });
-          if (!img) break;
+        let cur = viewerImage();
+        let prev = {
+          fbid: currentFbid(),
+          urlPath: cur ? dedupeKey(getBestImageUrl(cur)) : ""
+        };
+        for (let i = 0; i < maxSteps && !window.__fbHelperCancel; i++) {
+          const stepped = await step("prev", prev);
+          if (!stepped) {
+            const endImg = viewerImage();
+            if (endImg) {
+              const settled = await settle(endImg);
+              const snap2 = snapshot(settled);
+              if (snap2.url && !collected.has(snap2.key)) {
+                collected.set(snap2.key, snap2);
+                progress(collected);
+              }
+            }
+            break;
+          }
+          const snap = snapshot(await settle(stepped));
+          if (collected.has(snap.key)) {
+            break;
+          }
+          collected.set(snap.key, snap);
+          prev = {
+            fbid: snap.fbid,
+            urlPath: dedupeKey(snap.url)
+          };
+          progress(collected);
         }
-        await walk("prev");
       }
       if (!wasInViewer) {
         pressKey("Escape");

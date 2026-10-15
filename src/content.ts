@@ -350,25 +350,10 @@ function clusterByGeometry(items: Item[]): Cluster[] {
 }
 
 function splitBySet(clusters: Cluster[]): Cluster[] {
-  const out: Cluster[] = [];
-  for (const c of clusters) {
-    // If all items belong to the same Facebook post container, preserve them as one cluster
-    const firstPost = getPostContainer(c.items[0].img);
-    if (firstPost && c.items.every((i) => getPostContainer(i.img) === firstPost)) {
-      out.push(c);
-      continue;
-    }
-    const sets = new Set(c.items.map((i) => i.setId).filter(Boolean));
-    if (sets.size <= 1) {
-      out.push(c);
-      continue;
-    }
-    for (const s of sets) {
-      const items = c.items.filter((i) => i.setId === s);
-      out.push({ items, box: unionBox(items) });
-    }
-  }
-  return out;
+  // Photos clustered by geometry are already touching within 50px (part of the same post/media block).
+  // In Facebook, post photos frequently mix different setId formats (e.g. pcb.123 vs a.456)
+  // or have empty setIds. Splitting by setId wrongfully fragments a single post and drops photos.
+  return clusters;
 }
 
 // ---------------------------------------------------- target identification
@@ -504,14 +489,31 @@ function toPhoto(i: Item): Photo {
   return { url: i.url, width: i.width, height: i.height, source: i.source, fbid: i.fbid };
 }
 
-/** One entry per photo (same path = same photo); keep the widest version. Later entries win ties. */
+/** One entry per photo; keep the widest version. Later entries win ties. */
 function dedupePhotos(list: Photo[]): Photo[] {
   const byKey = new Map<string, Photo>();
   for (const p of list) {
     if (!p.url) continue;
-    const key = p.fbid ? `fbid_${p.fbid}` : dedupeKey(p.url);
-    const prev = byKey.get(key);
-    if (!prev || p.width >= prev.width) byKey.set(key, p);
+    const pathKey = dedupeKey(p.url);
+    const fbidKey = p.fbid ? `fbid_${p.fbid}` : "";
+
+    let existingKey: string | null = null;
+    if (fbidKey && byKey.has(fbidKey)) {
+      existingKey = fbidKey;
+    } else if (pathKey && byKey.has(pathKey)) {
+      existingKey = pathKey;
+    }
+
+    const key = fbidKey || pathKey;
+    if (existingKey) {
+      const prev = byKey.get(existingKey)!;
+      if (p.width >= prev.width) {
+        byKey.delete(existingKey);
+        byKey.set(key, p);
+      }
+    } else {
+      byKey.set(key, p);
+    }
   }
   return [...byKey.values()];
 }
@@ -626,7 +628,7 @@ function clickByLabel(re: RegExp): boolean {
 }
 
 /** Move one photo forward/back and wait until the viewer shows a different photo. */
-async function step(direction: Direction, prev: { key: string; fbid: string }): Promise<HTMLImageElement | null> {
+async function step(direction: Direction, prev: { fbid: string; urlPath: string }): Promise<HTMLImageElement | null> {
   const key: ViewerKey = direction === "next" ? "ArrowRight" : "ArrowLeft";
   const labelRe = direction === "next" ? NEXT_LABEL_RE : PREV_LABEL_RE;
   const changed = (): HTMLImageElement | null => {
@@ -637,7 +639,7 @@ async function step(direction: Direction, prev: { key: string; fbid: string }): 
     // Fallback: detect by image URL path change even if fbid was identical or not in URL
     if (img.naturalWidth) {
       const url = getBestImageUrl(img);
-      if (url && dedupeKey(url) !== prev.key) return img;
+      if (url && prev.urlPath && dedupeKey(url) !== prev.urlPath) return img;
     }
     return null;
   };
@@ -754,7 +756,11 @@ async function collectAll(): Promise<void> {
     progress(collected);
 
     const walk = async (direction: Direction): Promise<void> => {
-      let prev: { key: string; fbid: string } = first;
+      let cur = viewerImage();
+      let prev: { fbid: string; urlPath: string } = {
+        fbid: currentFbid(),
+        urlPath: cur ? dedupeKey(getBestImageUrl(cur)) : dedupeKey(first.url),
+      };
       for (let i = 0; i < maxSteps && !window.__fbHelperCancel; i++) {
         const stepped = await step(direction, prev);
         if (!stepped) {
@@ -775,26 +781,52 @@ async function collectAll(): Promise<void> {
         }
         const snap = snapshot(await settle(stepped));
         if (collected.has(snap.key)) {
-          // Wrapped around: we have already seen this photo. But if this is a
-          // *different* fbid pointing to the same underlying image path we may
-          // be seeing a genuine duplicate – just exit to avoid an infinite loop.
+          // Wrapped around: we have already seen this photo.
           return;
         }
         collected.set(snap.key, snap);
-        prev = snap;
+        prev = {
+          fbid: snap.fbid,
+          urlPath: dedupeKey(snap.url),
+        };
         progress(collected);
       }
     };
 
     await walk("next");
-    // Started mid-set from an already open viewer: also go backwards from the start photo.
+    // If not all expected photos were collected (e.g. viewer opened mid-set): also step backwards
     if ((wasInViewer || (expected && collected.size < expected)) && !window.__fbHelperCancel) {
-      // return to the start photo first
-      for (let i = 0; i < maxSteps && currentFbid() !== first.fbid; i++) {
-        const img = await step("prev", { key: "", fbid: currentFbid() });
-        if (!img) break;
+      let cur = viewerImage();
+      let prev: { fbid: string; urlPath: string } = {
+        fbid: currentFbid(),
+        urlPath: cur ? dedupeKey(getBestImageUrl(cur)) : "",
+      };
+      for (let i = 0; i < maxSteps && !window.__fbHelperCancel; i++) {
+        const stepped = await step("prev", prev);
+        if (!stepped) {
+          const endImg = viewerImage();
+          if (endImg) {
+            const settled = await settle(endImg);
+            const snap = snapshot(settled);
+            if (snap.url && !collected.has(snap.key)) {
+              collected.set(snap.key, snap);
+              progress(collected);
+            }
+          }
+          break;
+        }
+        const snap = snapshot(await settle(stepped));
+        if (collected.has(snap.key)) {
+          // Reached already seen photos
+          break;
+        }
+        collected.set(snap.key, snap);
+        prev = {
+          fbid: snap.fbid,
+          urlPath: dedupeKey(snap.url),
+        };
+        progress(collected);
       }
-      await walk("prev");
     }
 
     // 3. Close the viewer and restore the page
