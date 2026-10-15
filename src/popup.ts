@@ -76,9 +76,23 @@ function setPhotos(list: Photo[]): void {
 }
 
 async function getFacebookTab(): Promise<chrome.tabs.Tab | null> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !/^https:\/\/([^/]+\.)?facebook\.com\//.test(tab.url || "")) return null;
-  return tab;
+  // 1. Check if the current active tab is Facebook
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.id && /^https:\/\/([^/]+\.)?facebook\.com\//.test(activeTab.url || "")) {
+    return activeTab;
+  }
+
+  // 2. Otherwise find any open Facebook tab across all windows
+  const fbTabs = await chrome.tabs.query({ url: "https://*.facebook.com/*" });
+  if (fbTabs.length > 0) {
+    // Prefer single post / permalink / photo pages if available
+    const postTab = fbTabs.find(
+      (t) => t.url && /\/(posts|permalink|photo|story\.php|share\/p)/.test(t.url)
+    );
+    return postTab || fbTabs[0];
+  }
+
+  return null;
 }
 
 async function inject(tab: chrome.tabs.Tab): Promise<void> {
@@ -573,18 +587,37 @@ function renderComments(): void {
 /**
  * Scan all comments on the active Facebook post and save them.
  */
+function setFilter(filter: "all" | "my"): void {
+  currentFilter = filter;
+  cmEl.filterAll.classList.toggle("active", filter === "all");
+  cmEl.filterMy.classList.toggle("active", filter === "my");
+  renderComments();
+}
+
+/**
+ * Scan all comments on an open Facebook post and save them.
+ * Works even if the user is currently on another tab!
+ */
 async function scanPostCommentsAction(): Promise<void> {
   setCmStatus("");
   const tab = await getFacebookTab();
   if (!tab?.id) {
-    setCmStatus("Open a Facebook page or post in the active tab first.", true);
+    setCmStatus("No open Facebook tab found. Please open Facebook in a tab first.", true);
     return;
   }
 
   cmEl.scanBtn.disabled = true;
   const origText = cmEl.scanBtn.textContent || "📥 Scan Post Comments";
   cmEl.scanBtn.textContent = "Scanning comments...";
-  setCmStatus("Injecting scanner & analyzing comments...", false);
+
+  const isBackgroundTab = !tab.active;
+  const tabName = tab.title ? `"${tab.title.slice(0, 30)}…"` : "Facebook tab";
+  setCmStatus(
+    isBackgroundTab
+      ? `Scanning from open ${tabName} in background…`
+      : "Injecting scanner & analyzing comments...",
+    false
+  );
 
   try {
     await inject(tab);
@@ -620,6 +653,8 @@ async function scanPostCommentsAction(): Promise<void> {
     setCmStatus(`Saving ${toSave.length} comment(s)...`, false);
     await sendToBackgroundCM({ type: "SAVE_MULTIPLE_COMMENTS", comments: toSave });
 
+    // Switch to "All Comments" so newly scanned comments are immediately visible
+    setFilter("all");
     await loadComments();
     setCmStatus(`✓ Scanned and saved ${res.comments.length} comment(s) from post!`, false);
   } catch (err) {
@@ -826,19 +861,8 @@ cmEl.sort.addEventListener("change", renderComments);
 cmEl.refresh.addEventListener("click", () => void loadComments());
 cmEl.clearAll.addEventListener("click", () => void clearAllComments());
 
-cmEl.filterAll.addEventListener("click", () => {
-  currentFilter = "all";
-  cmEl.filterAll.classList.add("active");
-  cmEl.filterMy.classList.remove("active");
-  renderComments();
-});
-
-cmEl.filterMy.addEventListener("click", () => {
-  currentFilter = "my";
-  cmEl.filterMy.classList.add("active");
-  cmEl.filterAll.classList.remove("active");
-  renderComments();
-});
+cmEl.filterAll.addEventListener("click", () => setFilter("all"));
+cmEl.filterMy.addEventListener("click", () => setFilter("my"));
 
 cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
 
@@ -865,7 +889,13 @@ void (async function init(): Promise<void> {
 })();
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "session") return;
-  if (changes.job) renderJob(changes.job.newValue as Job | undefined);
-  if (changes.scan) renderScan(changes.scan.newValue as Scan | undefined);
+  if (area === "session") {
+    if (changes.job) renderJob(changes.job.newValue as Job | undefined);
+    if (changes.scan) renderScan(changes.scan.newValue as Scan | undefined);
+  } else if (area === "local") {
+    if (changes["fb_comments"]) {
+      allComments = (changes["fb_comments"].newValue as SavedComment[]) || [];
+      renderComments();
+    }
+  }
 });

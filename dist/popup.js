@@ -45,9 +45,18 @@
     el.direct.disabled = list.length === 0;
   }
   async function getFacebookTab() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !/^https:\/\/([^/]+\.)?facebook\.com\//.test(tab.url || "")) return null;
-    return tab;
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab?.id && /^https:\/\/([^/]+\.)?facebook\.com\//.test(activeTab.url || "")) {
+      return activeTab;
+    }
+    const fbTabs = await chrome.tabs.query({ url: "https://*.facebook.com/*" });
+    if (fbTabs.length > 0) {
+      const postTab = fbTabs.find(
+        (t) => t.url && /\/(posts|permalink|photo|story\.php|share\/p)/.test(t.url)
+      );
+      return postTab || fbTabs[0];
+    }
+    return null;
   }
   async function inject(tab) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
@@ -453,17 +462,28 @@ ${job.failed || 0} failed`;
     }
     cmEl.list.appendChild(frag);
   }
+  function setFilter(filter) {
+    currentFilter = filter;
+    cmEl.filterAll.classList.toggle("active", filter === "all");
+    cmEl.filterMy.classList.toggle("active", filter === "my");
+    renderComments();
+  }
   async function scanPostCommentsAction() {
     setCmStatus("");
     const tab = await getFacebookTab();
     if (!tab?.id) {
-      setCmStatus("Open a Facebook page or post in the active tab first.", true);
+      setCmStatus("No open Facebook tab found. Please open Facebook in a tab first.", true);
       return;
     }
     cmEl.scanBtn.disabled = true;
     const origText = cmEl.scanBtn.textContent || "\u{1F4E5} Scan Post Comments";
     cmEl.scanBtn.textContent = "Scanning comments...";
-    setCmStatus("Injecting scanner & analyzing comments...", false);
+    const isBackgroundTab = !tab.active;
+    const tabName = tab.title ? `"${tab.title.slice(0, 30)}\u2026"` : "Facebook tab";
+    setCmStatus(
+      isBackgroundTab ? `Scanning from open ${tabName} in background\u2026` : "Injecting scanner & analyzing comments...",
+      false
+    );
     try {
       await inject(tab);
       const autoExpand = cmEl.autoExpand.checked;
@@ -493,6 +513,7 @@ ${job.failed || 0} failed`;
       }));
       setCmStatus(`Saving ${toSave.length} comment(s)...`, false);
       await sendToBackgroundCM({ type: "SAVE_MULTIPLE_COMMENTS", comments: toSave });
+      setFilter("all");
       await loadComments();
       setCmStatus(`\u2713 Scanned and saved ${res.comments.length} comment(s) from post!`, false);
     } catch (err) {
@@ -664,18 +685,8 @@ ${job.failed || 0} failed`;
   cmEl.sort.addEventListener("change", renderComments);
   cmEl.refresh.addEventListener("click", () => void loadComments());
   cmEl.clearAll.addEventListener("click", () => void clearAllComments());
-  cmEl.filterAll.addEventListener("click", () => {
-    currentFilter = "all";
-    cmEl.filterAll.classList.add("active");
-    cmEl.filterMy.classList.remove("active");
-    renderComments();
-  });
-  cmEl.filterMy.addEventListener("click", () => {
-    currentFilter = "my";
-    cmEl.filterMy.classList.add("active");
-    cmEl.filterAll.classList.remove("active");
-    renderComments();
-  });
+  cmEl.filterAll.addEventListener("click", () => setFilter("all"));
+  cmEl.filterMy.addEventListener("click", () => setFilter("my"));
   cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
   el.detect.addEventListener("click", () => void detect());
   el.collect.addEventListener("click", () => void collectAll());
@@ -693,9 +704,15 @@ ${job.failed || 0} failed`;
     }
   })();
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "session") return;
-    if (changes.job) renderJob(changes.job.newValue);
-    if (changes.scan) renderScan(changes.scan.newValue);
+    if (area === "session") {
+      if (changes.job) renderJob(changes.job.newValue);
+      if (changes.scan) renderScan(changes.scan.newValue);
+    } else if (area === "local") {
+      if (changes["fb_comments"]) {
+        allComments = changes["fb_comments"].newValue || [];
+        renderComments();
+      }
+    }
   });
 })();
 //# sourceMappingURL=popup.js.map

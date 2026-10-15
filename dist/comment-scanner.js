@@ -199,10 +199,18 @@
     return void 0;
   }
   var processed = /* @__PURE__ */ new WeakSet();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes["fb_comments"]) {
+      const newVal = changes["fb_comments"].newValue;
+      if (!newVal || newVal.length === 0) {
+        processed = /* @__PURE__ */ new WeakSet();
+        if (document.body) scanSubtree(document.body);
+      }
+    }
+  });
   function tryProcessComment(el) {
     if (processed.has(el)) return false;
     const myId = resolveMyProfileId();
-    if (!myId) return false;
     if (!isLikelyComment(el)) {
       processed.add(el);
       return false;
@@ -218,28 +226,25 @@
     if (!authorLink) return false;
     const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
     if (!authorPath) return false;
-    if (!sameProfile(authorPath, myId)) {
-      processed.add(el);
-      return false;
-    }
+    const isMyComment = myId ? sameProfile(authorPath, myId) : false;
     const text = extractCommentText(el, authorLink);
-    const authorName = (authorLink.querySelector("img")?.getAttribute("alt") || authorLink.textContent || myProfileName).trim();
+    const authorName = (authorLink.querySelector("img")?.getAttribute("alt") || authorLink.textContent || (isMyComment ? myProfileName : "")).trim();
     processed.add(el);
     if (!text) {
-      console.debug("[FB Helper] comment found but text is empty after cleaning, skipping");
       return false;
     }
     const postUrl = extractPostUrl(el);
     const commentDate = extractCommentDate(el);
     const commentId = extractCommentId(el);
-    console.debug("[FB Helper] saving comment:", { text: text.slice(0, 50), postUrl, commentId });
     const payload = {
       type: "SAVE_COMMENT",
       comment: {
         text,
         postUrl,
-        authorName: myProfileName || authorName,
-        authorId: myId,
+        authorName: isMyComment && myProfileName ? myProfileName : authorName || "Facebook User",
+        authorId: authorPath,
+        authorProfileUrl: authorLink.href,
+        isMyComment,
         ...commentDate ? { commentDate } : {},
         ...commentId ? { commentId } : {}
       }

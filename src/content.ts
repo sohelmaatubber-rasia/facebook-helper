@@ -1220,6 +1220,41 @@ async function autoExpandComments(container: Element, maxClicks = 6): Promise<vo
   }
 }
 
+function resolveLoggedInUserId(): string | null {
+  const textboxes = document.querySelectorAll<HTMLElement>(
+    '[role="textbox"][contenteditable], [contenteditable="true"]'
+  );
+  for (const box of textboxes) {
+    const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
+    if (!label.includes("comment") && !label.includes("write") && !label.includes("মন্তব্য")) continue;
+
+    let el: Element | null = box.parentElement;
+    for (let depth = 0; depth < 8 && el; depth++) {
+      for (const a of el.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+        const path = profilePathFromHref(a.getAttribute("href") || "");
+        if (path) return path;
+      }
+      el = el.parentElement;
+    }
+  }
+
+  const navAreas = document.querySelectorAll<HTMLElement>('header, nav, [role="banner"], [role="navigation"]');
+  for (const nav of navAreas) {
+    for (const a of nav.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const path = profilePathFromHref(a.getAttribute("href") || "");
+      if (path) {
+        const text = (a.textContent || a.querySelector("img")?.getAttribute("alt") || "").trim().toLowerCase();
+        if (text && text !== "facebook") return path;
+      }
+    }
+  }
+  return null;
+}
+
+function sameProfile(a: string, b: string): boolean {
+  return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
+}
+
 async function scanPostComments(
   autoExpand = true,
   maxExpandClicks = 6
@@ -1244,6 +1279,7 @@ async function scanPostComments(
     }
 
     const postUrl = extractPostUrlFromPage(postContainer);
+    const myId = resolveLoggedInUserId();
 
     if (autoExpand) {
       await autoExpandComments(postContainer, maxExpandClicks);
@@ -1323,6 +1359,8 @@ async function scanPostComments(
         (root.parentElement?.closest('[role="article"]') !== null &&
           root.parentElement?.closest('[role="article"]') !== postContainer);
 
+      const isMy = myId ? sameProfile(authorPath, myId) : false;
+
       comments.push({
         id: uniqueId,
         text,
@@ -1333,6 +1371,7 @@ async function scanPostComments(
         commentDate,
         commentId,
         isReply,
+        isMyComment: isMy,
       });
     }
 

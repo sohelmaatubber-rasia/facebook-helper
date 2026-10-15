@@ -874,6 +874,37 @@
       if (!clickedAny) break;
     }
   }
+  function resolveLoggedInUserId() {
+    const textboxes = document.querySelectorAll(
+      '[role="textbox"][contenteditable], [contenteditable="true"]'
+    );
+    for (const box of textboxes) {
+      const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
+      if (!label.includes("comment") && !label.includes("write") && !label.includes("\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF")) continue;
+      let el = box.parentElement;
+      for (let depth = 0; depth < 8 && el; depth++) {
+        for (const a of el.querySelectorAll("a[href]")) {
+          const path = profilePathFromHref(a.getAttribute("href") || "");
+          if (path) return path;
+        }
+        el = el.parentElement;
+      }
+    }
+    const navAreas = document.querySelectorAll('header, nav, [role="banner"], [role="navigation"]');
+    for (const nav of navAreas) {
+      for (const a of nav.querySelectorAll("a[href]")) {
+        const path = profilePathFromHref(a.getAttribute("href") || "");
+        if (path) {
+          const text = (a.textContent || a.querySelector("img")?.getAttribute("alt") || "").trim().toLowerCase();
+          if (text && text !== "facebook") return path;
+        }
+      }
+    }
+    return null;
+  }
+  function sameProfile(a, b) {
+    return a.replace(/\/$/, "").toLowerCase() === b.replace(/\/$/, "").toLowerCase();
+  }
   async function scanPostComments(autoExpand = true, maxExpandClicks = 6) {
     try {
       let postContainer = document.body;
@@ -894,6 +925,7 @@
         if (closest) postContainer = closest;
       }
       const postUrl = extractPostUrlFromPage(postContainer);
+      const myId = resolveLoggedInUserId();
       if (autoExpand) {
         await autoExpandComments(postContainer, maxExpandClicks);
       }
@@ -946,6 +978,7 @@
         if (seenIds.has(uniqueId)) continue;
         seenIds.add(uniqueId);
         const isReply = root.closest('[role="group"]') !== null || root.parentElement?.closest('[role="article"]') !== null && root.parentElement?.closest('[role="article"]') !== postContainer;
+        const isMy = myId ? sameProfile(authorPath, myId) : false;
         comments.push({
           id: uniqueId,
           text,
@@ -955,7 +988,8 @@
           authorId: authorPath,
           commentDate,
           commentId,
-          isReply
+          isReply,
+          isMyComment: isMy
         });
       }
       return {

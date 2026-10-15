@@ -396,24 +396,31 @@ function extractCommentId(el: Element): string | undefined {
 // ------------------------------------------------------------------ processed set
 
 /** Prevents double-processing any element even when Facebook re-parents nodes. */
-const processed = new WeakSet<Element>();
+let processed = new WeakSet<Element>();
+
+// When storage is cleared in the popup, reset the in-memory set so comments can be re-captured
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes["fb_comments"]) {
+    const newVal = changes["fb_comments"].newValue as unknown[] | undefined;
+    if (!newVal || newVal.length === 0) {
+      processed = new WeakSet<Element>();
+      if (document.body) scanSubtree(document.body);
+    }
+  }
+});
 
 // ------------------------------------------------------------------ core
 
 /**
- * Given a candidate element (potential comment root), check if it is a comment
- * by the logged-in user, and if so, dispatch SAVE_COMMENT to the background.
+ * Given a candidate element (potential comment root), extract and save the comment,
+ * marking whether it belongs to the logged-in user (isMyComment).
  */
 function tryProcessComment(el: Element): boolean {
   if (processed.has(el)) return false;
 
   const myId = resolveMyProfileId();
-  if (!myId) return false; // can't determine owner yet
 
   // ── Gate 1: only process elements that look like real comment bubbles.
-  // Profile page sections ("Works at …", "See all photos", "Education", etc.)
-  // contain the user's profile link but do NOT have Like/Reply buttons — so
-  // they are filtered out here before any further work.
   if (!isLikelyComment(el)) {
     processed.add(el);
     return false;
@@ -430,24 +437,18 @@ function tryProcessComment(el: Element): boolean {
   const authorPath = profilePathFromHref(authorLink.getAttribute("href") || "");
   if (!authorPath) return false;
 
-  // Only save if the comment author IS the logged-in user
-  if (!sameProfile(authorPath, myId)) {
-    // Mark as processed regardless — we still don't want to re-check it
-    processed.add(el);
-    return false;
-  }
+  // Determine if this comment was written by the logged-in user
+  const isMyComment = myId ? sameProfile(authorPath, myId) : false;
 
   // Extract comment text (must be non-empty after cleaning)
   const text = extractCommentText(el, authorLink);
   const authorName = (authorLink.querySelector("img")?.getAttribute("alt") ||
-                      authorLink.textContent || myProfileName).trim();
+                      authorLink.textContent || (isMyComment ? myProfileName : "")).trim();
 
   // Mark processed before the async send to prevent re-entry
   processed.add(el);
 
   if (!text) {
-    // Empty after cleaning — likely a sticker/photo comment with no text
-    console.debug("[FB Helper] comment found but text is empty after cleaning, skipping");
     return false;
   }
 
@@ -455,15 +456,15 @@ function tryProcessComment(el: Element): boolean {
   const commentDate = extractCommentDate(el);
   const commentId = extractCommentId(el);
 
-  console.debug("[FB Helper] saving comment:", { text: text.slice(0, 50), postUrl, commentId });
-
   const payload: CommentMessage = {
     type: "SAVE_COMMENT",
     comment: {
       text,
       postUrl,
-      authorName: myProfileName || authorName,
-      authorId: myId,
+      authorName: (isMyComment && myProfileName) ? myProfileName : (authorName || "Facebook User"),
+      authorId: authorPath,
+      authorProfileUrl: authorLink.href,
+      isMyComment,
       ...(commentDate ? { commentDate } : {}),
       ...(commentId ? { commentId } : {}),
     },
