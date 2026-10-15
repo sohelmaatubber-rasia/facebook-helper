@@ -68,6 +68,17 @@
         return { path, name };
       }
     }
+    const explicitProfileLinks = document.querySelectorAll(
+      'a[href][aria-label*="profile" i], a[href][aria-label*="\u09AA\u09CD\u09B0\u09CB\u09AB\u09BE\u0987\u09B2" i]'
+    );
+    for (const a of explicitProfileLinks) {
+      const path = profilePathFromHref(a.getAttribute("href") || "");
+      if (!path) continue;
+      const name = (a.getAttribute("aria-label") || a.textContent || "").trim();
+      if (name && name.toLowerCase() !== "facebook") {
+        return { path, name: name.slice(0, 80) };
+      }
+    }
     return null;
   }
   function resolveMyProfileId() {
@@ -144,23 +155,24 @@
     return void 0;
   }
   var PROFILE_SECTION_RE = /^(works?\s+at|studied?\s+at|lives?\s+in|from\s+|education|see\s+all\s+(photos|friends|videos|check-ins|likes|posts)|went\s+to|in\s+a\s+relationship|married|single|following|followers?|mutual\s+friend)/i;
+  var COMMENT_ACTION_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
   function isLikelyComment(el) {
     const rawText = (el.textContent || "").trim();
     if (PROFILE_SECTION_RE.test(rawText)) return false;
-    if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more)/i.test(rawText)) return false;
+    if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more|আরও\s*দেখুন)/i.test(rawText)) return false;
     const roots = [el];
     if (el.parentElement) roots.push(el.parentElement);
     if (el.parentElement?.parentElement) roots.push(el.parentElement.parentElement);
     for (const root of roots) {
       for (const node of root.querySelectorAll("[aria-label]")) {
-        const label = (node.getAttribute("aria-label") || "").toLowerCase();
-        if (label.startsWith("like") || label.startsWith("reply") || label.startsWith("react") || label.includes("thumbs up")) {
+        const label = (node.getAttribute("aria-label") || "").trim().toLowerCase();
+        if (COMMENT_ACTION_RE.test(label) || label.includes("thumbs up") || label.endsWith("\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8")) {
           return true;
         }
       }
-      for (const btn of root.querySelectorAll('[role="button"]')) {
+      for (const btn of root.querySelectorAll('[role="button"], button')) {
         const t = (btn.textContent || "").trim().toLowerCase();
-        if (t === "like" || t === "reply") return true;
+        if (COMMENT_ACTION_RE.test(t) || t === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || t === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8") return true;
       }
     }
     return false;
@@ -240,9 +252,9 @@
     const seenCandidates = /* @__PURE__ */ new WeakSet();
     const actionNodes = [];
     for (const el of root.querySelectorAll('[role="button"], [aria-label]')) {
-      const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+      const ariaLabel = (el.getAttribute("aria-label") || "").trim().toLowerCase();
       const textContent = (el.textContent || "").trim().toLowerCase();
-      const isLikeOrReply = textContent === "like" || textContent === "reply" || ariaLabel.startsWith("like") || ariaLabel.startsWith("reply") || ariaLabel.startsWith("react");
+      const isLikeOrReply = COMMENT_ACTION_RE.test(textContent) || COMMENT_ACTION_RE.test(ariaLabel) || textContent === "\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8" || textContent === "\u09AA\u099B\u09A8\u09CD\u09A6 \u0995\u09B0\u09C1\u09A8";
       if (isLikeOrReply) actionNodes.push(el);
     }
     for (const actionEl of actionNodes) {

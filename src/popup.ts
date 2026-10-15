@@ -614,6 +614,39 @@ async function jumpToComment(comment: SavedComment): Promise<void> {
 }
 
 /**
+ * Get the current Facebook tab or open the saved comment's post in a new tab
+ * and wait for it to load.
+ */
+async function getOrOpenPostTab(comment: SavedComment): Promise<chrome.tabs.Tab | null> {
+  const activeTab = await getFacebookTab();
+  if (activeTab?.id) {
+    return activeTab;
+  }
+
+  // Open the post URL directly in a new active tab
+  const url = buildCommentUrl(comment);
+  const tab = await chrome.tabs.create({ url, active: true });
+  if (!tab.id) return null;
+
+  const tabId = tab.id;
+  await new Promise<void>((resolve) => {
+    const listener = (updatedId: number, change: chrome.tabs.TabChangeInfo) => {
+      if (updatedId === tabId && change.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, 10000);
+  });
+
+  return tab;
+}
+
+/**
  * Send a reply to a comment from the popup.
  * Finds (or opens) the Facebook tab with the post, injects content.js,
  * then sends REPLY_TO_COMMENT so the content script performs the reply.
@@ -630,20 +663,19 @@ async function sendReply(comment: SavedComment, replyText: string, formEl: HTMLE
   }
 
   if (sendBtn) sendBtn.disabled = true;
-  setReplyStatus("Looking for comment on current page…", false);
+  setReplyStatus("Connecting to Facebook post…", false);
 
   try {
-    // Use the currently active Facebook tab
-    const tab = await getFacebookTab();
+    const tab = await getOrOpenPostTab(comment);
     if (!tab?.id) {
-      setReplyStatus("Open the Facebook post in the active tab first.", true);
+      setReplyStatus("Could not open the Facebook post tab.", true);
       return;
     }
 
-    setReplyStatus("Injecting…", false);
+    setReplyStatus("Injecting helper…", false);
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
 
-    setReplyStatus("Looking for comment…", false);
+    setReplyStatus("Finding comment and submitting reply…", false);
     const res = await chrome.tabs.sendMessage<ContentRequest, ReplyResponse>(tab.id, {
       type: "REPLY_TO_COMMENT",
       commentText: comment.text,
@@ -652,11 +684,13 @@ async function sendReply(comment: SavedComment, replyText: string, formEl: HTMLE
     });
 
     if (res?.ok) {
-      setReplyStatus("✓ Reply sent!", false);
-      // Clear textarea and close form after success
+      setReplyStatus("✓ Reply submitted successfully!", false);
       const ta = formEl.querySelector<HTMLTextAreaElement>("textarea");
       if (ta) ta.value = "";
-      setTimeout(() => { formEl.hidden = true; setReplyStatus("", false); }, 2000);
+      setTimeout(() => {
+        formEl.hidden = true;
+        setReplyStatus("", false);
+      }, 2500);
     } else {
       setReplyStatus(`Failed: ${(res as { ok: false; error: string })?.error || "Unknown error"}`, true);
     }

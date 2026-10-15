@@ -588,35 +588,47 @@
     attempt();
   }
   async function replyToCommentOnPage(commentText, replyText, commentId) {
-    const REPLY_LABEL_RE = /^reply$/i;
-    const trimmed = commentText.trim().slice(0, 120).toLowerCase();
+    const REPLY_REGEX = /^(reply|উত্তর\s*দিন|উত্তর|জবাব\s*দাঁও|responder|répondre|antworten|rispondi|رد)(\s|$)/i;
+    const SUBMIT_REGEX = /^(post|comment|send|submit|পোস্ট|মন্তব্য|পাঠান)(\s|$)/i;
+    const normalizedTarget = commentText.replace(/\s+/g, " ").trim().slice(0, 100).toLowerCase();
     gotoCommentOnPage(commentText);
-    await sleep(1e3);
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    await sleep(800);
     let targetEl = null;
-    let node;
-    while (node = walker.nextNode()) {
-      const content = (node.textContent || "").toLowerCase();
-      if (content.includes(trimmed)) {
-        const parent = node.parentElement;
-        if (parent && (parent.textContent || "").length < 2e3) {
-          targetEl = parent;
-          break;
+    if (commentId) {
+      const byCommentId = document.querySelector(
+        `[data-commentid="${commentId}"], a[href*="comment_id=${commentId}"]`
+      );
+      if (byCommentId) {
+        targetEl = byCommentId.closest('[role="article"], div[data-visualcompletion]') || byCommentId;
+      }
+    }
+    if (!targetEl) {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while (node = walker.nextNode()) {
+        const content = (node.textContent || "").replace(/\s+/g, " ").toLowerCase();
+        if (normalizedTarget && content.includes(normalizedTarget)) {
+          const parent = node.parentElement;
+          if (parent && (parent.textContent || "").length < 2e3) {
+            targetEl = parent;
+            break;
+          }
         }
       }
     }
     if (!targetEl) {
       const moreBtn = [...document.querySelectorAll('[role="button"]')].find(
-        (n) => /view\s*(more|previous)\s*comment/i.test(n.textContent || "")
+        (n) => /view\s*(more|previous)\s*comment|আরও\s*মন্তব্য/i.test(n.textContent || "")
       );
       if (moreBtn) {
         moreBtn.click();
         await sleep(1500);
         const walker2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        while (node = walker2.nextNode()) {
-          const content = (node.textContent || "").toLowerCase();
-          if (content.includes(trimmed)) {
-            const parent = node.parentElement;
+        let node2;
+        while (node2 = walker2.nextNode()) {
+          const content = (node2.textContent || "").replace(/\s+/g, " ").toLowerCase();
+          if (normalizedTarget && content.includes(normalizedTarget)) {
+            const parent = node2.parentElement;
             if (parent && (parent.textContent || "").length < 2e3) {
               targetEl = parent;
               break;
@@ -625,49 +637,113 @@
         }
       }
     }
-    if (!targetEl) return { ok: false, error: "Comment not found on page \u2014 it may need scrolling or the page changed." };
+    if (!targetEl) {
+      return { ok: false, error: "Comment not found on page \u2014 it may need scrolling or page reload." };
+    }
     targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
-    await sleep(500);
+    await sleep(400);
     let replyBtn = null;
     let cur = targetEl;
-    for (let depth = 0; depth < 8 && cur; depth++) {
-      const found = [...cur.querySelectorAll("[aria-label], [role='button']")].find((n) => {
-        const label = (n.getAttribute("aria-label") || n.textContent || "").trim();
-        return REPLY_LABEL_RE.test(label);
-      });
-      if (found) {
-        replyBtn = found;
-        break;
+    for (let depth = 0; depth < 10 && cur && cur !== document.body; depth++) {
+      const buttons = cur.querySelectorAll('[role="button"], button, [aria-label]');
+      for (const b of buttons) {
+        const label = (b.getAttribute("aria-label") || b.textContent || "").trim().toLowerCase();
+        if (REPLY_REGEX.test(label) || label.endsWith("\u0989\u09A4\u09CD\u09A4\u09B0 \u09A6\u09BF\u09A8")) {
+          replyBtn = b;
+          break;
+        }
       }
+      if (replyBtn) break;
       cur = cur.parentElement;
     }
-    if (!replyBtn) return { ok: false, error: "Reply button not found near the comment." };
+    if (!replyBtn) {
+      return { ok: false, error: "Reply button not found near the comment." };
+    }
     replyBtn.click();
     const replyBox = await waitFor(() => {
-      const boxes = document.querySelectorAll('[role="textbox"][contenteditable]');
+      const boxes = document.querySelectorAll('[role="textbox"][contenteditable="true"]');
       for (const box of boxes) {
         const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
-        if (label.includes("reply") || label.includes("write") || label.includes("comment")) {
+        if (label.includes("reply") || label.includes("write") || label.includes("comment") || label.includes("\u0989\u09A4\u09CD\u09A4\u09B0") || label.includes("\u09AE\u09A8\u09CD\u09A4\u09AC\u09CD\u09AF")) {
           const r = box.getBoundingClientRect();
           if (r.width > 0 && r.height > 0) return box;
         }
       }
       return null;
-    }, 5e3);
-    if (!replyBox) return { ok: false, error: "Reply text box did not appear." };
+    }, 6e3);
+    if (!replyBox) {
+      return { ok: false, error: "Reply text box did not appear after clicking Reply." };
+    }
     replyBox.focus();
-    await sleep(200);
-    document.execCommand("selectAll", false);
-    document.execCommand("delete", false);
-    document.execCommand("insertText", false, replyText);
-    await sleep(300);
-    replyBox.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true }));
-    replyBox.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", keyCode: 13, bubbles: true }));
+    await sleep(250);
+    try {
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        const range = document.createRange();
+        range.selectNodeContents(replyBox);
+        range.collapse(false);
+        sel.addRange(range);
+      }
+    } catch (_) {
+    }
+    let handled = false;
+    try {
+      const beforeInputEv = new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: replyText
+      });
+      handled = !replyBox.dispatchEvent(beforeInputEv);
+    } catch (_) {
+    }
+    if (!handled) {
+      try {
+        document.execCommand("selectAll", false);
+        document.execCommand("delete", false);
+        document.execCommand("insertText", false, replyText);
+      } catch (_) {
+      }
+    }
+    try {
+      replyBox.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertText",
+          data: replyText
+        })
+      );
+    } catch (_) {
+      replyBox.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await sleep(350);
+    const enterEventInit = {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true
+    };
+    replyBox.dispatchEvent(new KeyboardEvent("keydown", enterEventInit));
+    replyBox.dispatchEvent(new KeyboardEvent("keypress", enterEventInit));
+    replyBox.dispatchEvent(new KeyboardEvent("keyup", enterEventInit));
     await sleep(500);
-    const submitBtn = [...document.querySelectorAll("[aria-label]")].find(
-      (n) => /^post$/i.test(n.getAttribute("aria-label") || "")
-    );
-    if (submitBtn) submitBtn.click();
+    let container = replyBox.parentElement;
+    for (let d = 0; d < 6 && container; d++) {
+      const submitBtn = [...container.querySelectorAll('[role="button"], button')].find((n) => {
+        if (n === replyBox || n === replyBtn) return false;
+        const aria = (n.getAttribute("aria-label") || n.textContent || "").trim().toLowerCase();
+        return SUBMIT_REGEX.test(aria) || n.querySelector('svg[aria-label*="send" i], svg[aria-label*="post" i], svg[aria-label*="comment" i]') !== null;
+      });
+      if (submitBtn) {
+        submitBtn.click();
+        break;
+      }
+      container = container.parentElement;
+    }
     return { ok: true };
   }
   function onMessage(message, _sender, sendResponse) {

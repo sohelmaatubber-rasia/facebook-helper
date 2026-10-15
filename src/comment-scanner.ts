@@ -157,6 +157,20 @@ function findProfileInNav(): { path: string; name: string } | null {
       return { path, name };
     }
   }
+
+  // Fallback: look for explicit profile aria-labels across the document header/nav
+  const explicitProfileLinks = document.querySelectorAll<HTMLAnchorElement>(
+    'a[href][aria-label*="profile" i], a[href][aria-label*="প্রোফাইল" i]'
+  );
+  for (const a of explicitProfileLinks) {
+    const path = profilePathFromHref(a.getAttribute("href") || "");
+    if (!path) continue;
+    const name = (a.getAttribute("aria-label") || a.textContent || "").trim();
+    if (name && name.toLowerCase() !== "facebook") {
+      return { path, name: name.slice(0, 80) };
+    }
+  }
+
   return null;
 }
 
@@ -306,6 +320,8 @@ const PROFILE_SECTION_RE = /^(works?\s+at|studied?\s+at|lives?\s+in|from\s+|educ
  * A real comment almost always has "Like" or "Reply" action buttons nearby
  * (inside the element or in an immediately enclosing parent/grandparent).
  */
+const COMMENT_ACTION_RE = /^(like|reply|react|thumbs up|love|care|পছন্দ|উত্তর|প্রতিক্রিয়া|লাইক|রিপ্লাই)(\s|$)/i;
+
 function isLikelyComment(el: Element): boolean {
   // ── Fast-reject: profile-section text patterns
   const rawText = (el.textContent || "").trim();
@@ -314,7 +330,7 @@ function isLikelyComment(el: Element): boolean {
   if (PROFILE_SECTION_RE.test(rawText)) return false;
 
   // Reject pure UI phrases
-  if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more)/i.test(rawText)) return false;
+  if (/^(see\s+all|view\s+(more|previous)|load\s+more|show\s+more|আরও\s*দেখুন)/i.test(rawText)) return false;
 
   // ── Must have Like or Reply buttons nearby
   // Search in the element itself, its parent, AND grandparent because
@@ -326,20 +342,19 @@ function isLikelyComment(el: Element): boolean {
   for (const root of roots) {
     // aria-label based detection
     for (const node of root.querySelectorAll<HTMLElement>("[aria-label]")) {
-      const label = (node.getAttribute("aria-label") || "").toLowerCase();
+      const label = (node.getAttribute("aria-label") || "").trim().toLowerCase();
       if (
-        label.startsWith("like") ||
-        label.startsWith("reply") ||
-        label.startsWith("react") ||
-        label.includes("thumbs up")
+        COMMENT_ACTION_RE.test(label) ||
+        label.includes("thumbs up") ||
+        label.endsWith("উত্তর দিন")
       ) {
         return true;
       }
     }
-    // role="button" with text "Like" / "Reply" (some FB locales omit aria-label)
-    for (const btn of root.querySelectorAll('[role="button"]')) {
+    // role="button" with text
+    for (const btn of root.querySelectorAll('[role="button"], button')) {
       const t = (btn.textContent || "").trim().toLowerCase();
-      if (t === "like" || t === "reply") return true;
+      if (COMMENT_ACTION_RE.test(t) || t === "উত্তর দিন" || t === "পছন্দ করুন") return true;
     }
   }
   return false;
@@ -480,12 +495,13 @@ function scanSubtree(root: Element): void {
   // Find all role="button" or aria-label elements that look like comment actions
   const actionNodes: HTMLElement[] = [];
   for (const el of root.querySelectorAll<HTMLElement>('[role="button"], [aria-label]')) {
-    const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+    const ariaLabel = (el.getAttribute("aria-label") || "").trim().toLowerCase();
     const textContent = (el.textContent || "").trim().toLowerCase();
     const isLikeOrReply =
-      textContent === "like" || textContent === "reply" ||
-      ariaLabel.startsWith("like") || ariaLabel.startsWith("reply") ||
-      ariaLabel.startsWith("react");
+      COMMENT_ACTION_RE.test(textContent) ||
+      COMMENT_ACTION_RE.test(ariaLabel) ||
+      textContent === "উত্তর দিন" ||
+      textContent === "পছন্দ করুন";
     if (isLikeOrReply) actionNodes.push(el);
   }
 

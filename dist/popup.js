@@ -497,6 +497,30 @@ ${job.failed || 0} failed`;
       void openAndLocate(comment);
     }
   }
+  async function getOrOpenPostTab(comment) {
+    const activeTab = await getFacebookTab();
+    if (activeTab?.id) {
+      return activeTab;
+    }
+    const url = buildCommentUrl(comment);
+    const tab = await chrome.tabs.create({ url, active: true });
+    if (!tab.id) return null;
+    const tabId = tab.id;
+    await new Promise((resolve) => {
+      const listener = (updatedId, change) => {
+        if (updatedId === tabId && change.status === "complete") {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }, 1e4);
+    });
+    return tab;
+  }
   async function sendReply(comment, replyText, formEl) {
     const statusEl = formEl.querySelector(".cm-reply-status");
     const sendBtn = formEl.querySelector("[data-action='send-reply']");
@@ -507,16 +531,16 @@ ${job.failed || 0} failed`;
       statusEl.classList.toggle("error", isError);
     }
     if (sendBtn) sendBtn.disabled = true;
-    setReplyStatus("Looking for comment on current page\u2026", false);
+    setReplyStatus("Connecting to Facebook post\u2026", false);
     try {
-      const tab = await getFacebookTab();
+      const tab = await getOrOpenPostTab(comment);
       if (!tab?.id) {
-        setReplyStatus("Open the Facebook post in the active tab first.", true);
+        setReplyStatus("Could not open the Facebook post tab.", true);
         return;
       }
-      setReplyStatus("Injecting\u2026", false);
+      setReplyStatus("Injecting helper\u2026", false);
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-      setReplyStatus("Looking for comment\u2026", false);
+      setReplyStatus("Finding comment and submitting reply\u2026", false);
       const res = await chrome.tabs.sendMessage(tab.id, {
         type: "REPLY_TO_COMMENT",
         commentText: comment.text,
@@ -524,13 +548,13 @@ ${job.failed || 0} failed`;
         commentId: comment.commentId
       });
       if (res?.ok) {
-        setReplyStatus("\u2713 Reply sent!", false);
+        setReplyStatus("\u2713 Reply submitted successfully!", false);
         const ta = formEl.querySelector("textarea");
         if (ta) ta.value = "";
         setTimeout(() => {
           formEl.hidden = true;
           setReplyStatus("", false);
-        }, 2e3);
+        }, 2500);
       } else {
         setReplyStatus(`Failed: ${res?.error || "Unknown error"}`, true);
       }

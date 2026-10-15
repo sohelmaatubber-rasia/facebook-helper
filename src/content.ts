@@ -862,43 +862,56 @@ async function replyToCommentOnPage(
   replyText: string,
   commentId?: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const REPLY_LABEL_RE = /^reply$/i;
-  const trimmed = commentText.trim().slice(0, 120).toLowerCase();
+  const REPLY_REGEX = /^(reply|উত্তর\s*দিন|উত্তর|জবাব\s*দাঁও|responder|répondre|antworten|rispondi|رد)(\s|$)/i;
+  const SUBMIT_REGEX = /^(post|comment|send|submit|পোস্ট|মন্তব্য|পাঠান)(\s|$)/i;
+  const normalizedTarget = commentText.replace(/\s+/g, " ").trim().slice(0, 100).toLowerCase();
 
-  // ── 1. Scroll to the comment first (reuse the goto logic)
+  // ── 1. Scroll toward comment
   gotoCommentOnPage(commentText);
-  await sleep(1000);
+  await sleep(800);
 
-  // ── 2. Locate the comment element by text
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  // ── 2. Locate the comment element (First by commentId, then by text)
   let targetEl: HTMLElement | null = null;
-  let node: Node | null;
 
-  while ((node = walker.nextNode())) {
-    const content = (node.textContent || "").toLowerCase();
-    if (content.includes(trimmed)) {
-      const parent = node.parentElement;
-      if (parent && (parent.textContent || "").length < 2000) {
-        targetEl = parent;
-        break;
-      }
+  if (commentId) {
+    const byCommentId = document.querySelector<HTMLElement>(
+      `[data-commentid="${commentId}"], a[href*="comment_id=${commentId}"]`
+    );
+    if (byCommentId) {
+      targetEl = byCommentId.closest<HTMLElement>('[role="article"], div[data-visualcompletion]') || byCommentId;
     }
   }
 
   if (!targetEl) {
-    // If the comment is not visible, try expanding "View more comments"
-    const moreBtn = [...document.querySelectorAll<HTMLElement>('[role="button"]')].find(
-      (n) => /view\s*(more|previous)\s*comment/i.test(n.textContent || "")
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const content = (node.textContent || "").replace(/\s+/g, " ").toLowerCase();
+      if (normalizedTarget && content.includes(normalizedTarget)) {
+        const parent = node.parentElement;
+        if (parent && (parent.textContent || "").length < 2000) {
+          targetEl = parent;
+          break;
+        }
+      }
+    }
+  }
+
+  // If still not found, expand hidden comments once
+  if (!targetEl) {
+    const moreBtn = [...document.querySelectorAll<HTMLElement>('[role="button"]')].find((n) =>
+      /view\s*(more|previous)\s*comment|আরও\s*মন্তব্য/i.test(n.textContent || "")
     );
     if (moreBtn) {
       moreBtn.click();
       await sleep(1500);
-      // retry
+
       const walker2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      while ((node = walker2.nextNode())) {
-        const content = (node.textContent || "").toLowerCase();
-        if (content.includes(trimmed)) {
-          const parent = node.parentElement;
+      let node2: Node | null;
+      while ((node2 = walker2.nextNode())) {
+        const content = (node2.textContent || "").replace(/\s+/g, " ").toLowerCase();
+        if (normalizedTarget && content.includes(normalizedTarget)) {
+          const parent = node2.parentElement;
           if (parent && (parent.textContent || "").length < 2000) {
             targetEl = parent;
             break;
@@ -908,65 +921,141 @@ async function replyToCommentOnPage(
     }
   }
 
-  if (!targetEl) return { ok: false, error: "Comment not found on page — it may need scrolling or the page changed." };
+  if (!targetEl) {
+    return { ok: false, error: "Comment not found on page — it may need scrolling or page reload." };
+  }
 
-  // ── 3. Scroll the comment into view
+  // ── 3. Scroll into center view
   targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
-  await sleep(500);
+  await sleep(400);
 
-  // ── 4. Find the Reply button near the comment (search up to 8 parent levels)
+  // ── 4. Locate Reply button near the comment
   let replyBtn: HTMLElement | null = null;
   let cur: Element | null = targetEl;
-  for (let depth = 0; depth < 8 && cur; depth++) {
-    const found = [...cur.querySelectorAll<HTMLElement>("[aria-label], [role='button']")].find((n) => {
-      const label = (n.getAttribute("aria-label") || n.textContent || "").trim();
-      return REPLY_LABEL_RE.test(label);
-    });
-    if (found) { replyBtn = found; break; }
+  for (let depth = 0; depth < 10 && cur && cur !== document.body; depth++) {
+    const buttons = cur.querySelectorAll<HTMLElement>('[role="button"], button, [aria-label]');
+    for (const b of buttons) {
+      const label = (b.getAttribute("aria-label") || b.textContent || "").trim().toLowerCase();
+      if (REPLY_REGEX.test(label) || label.endsWith("উত্তর দিন")) {
+        replyBtn = b;
+        break;
+      }
+    }
+    if (replyBtn) break;
     cur = cur.parentElement;
   }
 
-  if (!replyBtn) return { ok: false, error: "Reply button not found near the comment." };
+  if (!replyBtn) {
+    return { ok: false, error: "Reply button not found near the comment." };
+  }
 
   replyBtn.click();
 
-  // ── 5. Wait for the reply textbox to appear
+  // ── 5. Wait for the reply contenteditable textbox to appear and be focused
   const replyBox = await waitFor<HTMLElement>(() => {
-    const boxes = document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable]');
+    const boxes = document.querySelectorAll<HTMLElement>('[role="textbox"][contenteditable="true"]');
     for (const box of boxes) {
       const label = (box.getAttribute("aria-label") || box.getAttribute("aria-placeholder") || "").toLowerCase();
-      if (label.includes("reply") || label.includes("write") || label.includes("comment")) {
+      if (
+        label.includes("reply") ||
+        label.includes("write") ||
+        label.includes("comment") ||
+        label.includes("উত্তর") ||
+        label.includes("মন্তব্য")
+      ) {
         const r = box.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return box;
       }
     }
     return null;
-  }, 5000);
+  }, 6000);
 
-  if (!replyBox) return { ok: false, error: "Reply text box did not appear." };
+  if (!replyBox) {
+    return { ok: false, error: "Reply text box did not appear after clicking Reply." };
+  }
 
   replyBox.focus();
-  await sleep(200);
+  await sleep(250);
 
-  // ── 6. Type the reply text
-  // document.execCommand is deprecated but still the most reliable cross-browser
-  // way to insert text into a contenteditable so React's state stays in sync.
-  document.execCommand("selectAll", false);
-  document.execCommand("delete", false);
-  document.execCommand("insertText", false, replyText);
+  // ── 6. Type the text ensuring compatibility with Lexical / Draft.js / React
+  try {
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(replyBox);
+      range.collapse(false);
+      sel.addRange(range);
+    }
+  } catch (_) {}
 
-  await sleep(300);
+  // Lexical beforeinput dispatch
+  let handled = false;
+  try {
+    const beforeInputEv = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: replyText,
+    });
+    handled = !replyBox.dispatchEvent(beforeInputEv);
+  } catch (_) {}
 
-  // ── 7. Submit — try Enter key (the standard FB keyboard shortcut)
-  replyBox.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true }));
-  replyBox.dispatchEvent(new KeyboardEvent("keyup",  { key: "Enter", keyCode: 13, bubbles: true }));
+  if (!handled) {
+    try {
+      document.execCommand("selectAll", false);
+      document.execCommand("delete", false);
+      document.execCommand("insertText", false, replyText);
+    } catch (_) {}
+  }
 
-  // Fallback: look for a "Post" or submit button nearby if Enter doesn't work
+  try {
+    replyBox.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: replyText,
+      })
+    );
+  } catch (_) {
+    replyBox.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  await sleep(350);
+
+  // ── 7. Submit via Enter key & Send button fallback
+  const enterEventInit: KeyboardEventInit = {
+    key: "Enter",
+    code: "Enter",
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+  };
+  replyBox.dispatchEvent(new KeyboardEvent("keydown", enterEventInit));
+  replyBox.dispatchEvent(new KeyboardEvent("keypress", enterEventInit));
+  replyBox.dispatchEvent(new KeyboardEvent("keyup", enterEventInit));
+
   await sleep(500);
-  const submitBtn = [...document.querySelectorAll<HTMLElement>("[aria-label]")].find((n) =>
-    /^post$/i.test(n.getAttribute("aria-label") || "")
-  );
-  if (submitBtn) submitBtn.click();
+
+  // Fallback: search for submit/send button inside the enclosing form or container
+  let container: Element | null = replyBox.parentElement;
+  for (let d = 0; d < 6 && container; d++) {
+    const submitBtn = [...container.querySelectorAll<HTMLElement>('[role="button"], button')].find((n) => {
+      if (n === replyBox || n === replyBtn) return false;
+      const aria = (n.getAttribute("aria-label") || n.textContent || "").trim().toLowerCase();
+      return (
+        SUBMIT_REGEX.test(aria) ||
+        n.querySelector('svg[aria-label*="send" i], svg[aria-label*="post" i], svg[aria-label*="comment" i]') !== null
+      );
+    });
+    if (submitBtn) {
+      submitBtn.click();
+      break;
+    }
+    container = container.parentElement;
+  }
 
   return { ok: true };
 }
