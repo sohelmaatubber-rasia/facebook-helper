@@ -107,16 +107,31 @@ type Direction = "next" | "prev";
 // ---------------------------------------------------------------- constants
 
 const CONFIG = {
-  clusterGap: 24, // px: photos closer than this belong to one media block
-  minFallbackSize: 120, // px: ignore small <img> (icons, avatars) in fallback
+  clusterGap: 50, // px: photos closer than this belong to one media block
+  minFallbackSize: 100, // px: ignore small <img> (icons, avatars) in fallback
   ambiguityRatio: 1.5, // best cluster must be this much more visible than 2nd
   highlightMs: 4000,
 } as const;
 
-const PHOTO_LINK_SELECTOR = 'a[href*="/photo/"], a[href*="/photo.php"], a[href*="/photos/"]';
+const PHOTO_LINK_SELECTOR =
+  'a[href*="/photo/"], a[href*="/photo?"], a[href*="/photo.php"], a[href*="/photos/"], a[href*="/photos?"]';
 const SINGLE_POST_URL_RE =
   /\/posts\/|\/permalink|\/photo\/?$|\/photo\.php|\/photos\/|story\.php|\/share\/p\//;
 const OVERLAY_COUNT_RE = /^\+\s*(\d{1,4})$/;
+
+// ---------------------------------------------------------------- post container helper
+
+function getPostContainer(el: Element): Element | null {
+  return el.closest(
+    '[role="article"], div[data-pagelet*="FeedUnit"], div[data-ad-preview="message"], div[data-virtualized="false"]'
+  );
+}
+
+function samePost(a: Element, b: Element): boolean {
+  const cA = getPostContainer(a);
+  const cB = getPostContainer(b);
+  return Boolean(cA && cB && cA === cB);
+}
 
 // ---------------------------------------------------------------- utilities
 
@@ -247,7 +262,7 @@ function parsePhotoHref(link: Element): { fbid: string; setId: string } {
     fbid = u.searchParams.get("fbid") || "";
     setId = u.searchParams.get("set") || "";
     if (!fbid) {
-      const m = u.pathname.match(/\/photos\/[^/]+\/(\d+)/);
+      const m = u.pathname.match(/\/photos?\/[^/]*\/(\d+)/) || u.pathname.match(/\/photo\/(\d+)/);
       if (m) fbid = m[1];
     }
   } catch (_) {
@@ -285,7 +300,7 @@ function collectItems(): Item[] {
   document.querySelectorAll<HTMLAnchorElement>(PHOTO_LINK_SELECTOR).forEach((link) => {
     const img = link.querySelector("img");
     if (!img) return;
-    const rect = docRect(link) || docRect(img);
+    const rect = docRect(img) || docRect(link);
     if (!rect) return;
     used.add(img);
     items.push(makeItem("link", img, rect, parsePhotoHref(link)));
@@ -314,7 +329,9 @@ function collectItems(): Item[] {
 function clusterByGeometry(items: Item[]): Cluster[] {
   let clusters: Cluster[] = [];
   for (const it of items) {
-    const hit = clusters.filter((c) => touches(c.box, it.rect));
+    const hit = clusters.filter(
+      (c) => touches(c.box, it.rect, CONFIG.clusterGap) || c.items.some((m) => samePost(m.img, it.img))
+    );
     if (!hit.length) {
       clusters.push({ items: [it], box: { ...it.rect } });
       continue;
@@ -335,6 +352,12 @@ function clusterByGeometry(items: Item[]): Cluster[] {
 function splitBySet(clusters: Cluster[]): Cluster[] {
   const out: Cluster[] = [];
   for (const c of clusters) {
+    // If all items belong to the same Facebook post container, preserve them as one cluster
+    const firstPost = getPostContainer(c.items[0].img);
+    if (firstPost && c.items.every((i) => getPostContainer(i.img) === firstPost)) {
+      out.push(c);
+      continue;
+    }
     const sets = new Set(c.items.map((i) => i.setId).filter(Boolean));
     if (sets.size <= 1) {
       out.push(c);
@@ -443,9 +466,14 @@ function analyze(): AnalyzeResult {
   const members = [...cluster.items];
 
   if (linkItems.length) {
-    // pull in non-link images that sit inside the same media block
+    // pull in non-link images that sit inside the same media block or belong to the same post
     items.forEach((i) => {
-      if (i.source === "img" && touches(cluster.box, i.rect)) members.push(i);
+      if (
+        i.source === "img" &&
+        (touches(cluster.box, i.rect, CONFIG.clusterGap) || cluster.items.some((m) => samePost(m.img, i.img)))
+      ) {
+        members.push(i);
+      }
     });
   } else {
     confidence = "low"; // no /photo/ links at all: only the <img> fallback was possible
@@ -481,7 +509,7 @@ function dedupePhotos(list: Photo[]): Photo[] {
   const byKey = new Map<string, Photo>();
   for (const p of list) {
     if (!p.url) continue;
-    const key = dedupeKey(p.url);
+    const key = p.fbid ? `fbid_${p.fbid}` : dedupeKey(p.url);
     const prev = byKey.get(key);
     if (!prev || p.width >= prev.width) byKey.set(key, p);
   }

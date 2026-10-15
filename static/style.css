@@ -150,3 +150,81 @@ p { margin: 6px 0; }
     font-weight: 600;
     color: #1c1e21;
 }
+
+/* ---- collected photos in popup ---- */
+.collected-box {
+    margin: 8px 0;
+    border: 1px solid #d8dadf;
+    border-radius: 6px;
+    background: #f7f8fa;
+    padding: 6px;
+}
+.collected-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #4b4f56;
+    margin-bottom: 6px;
+    padding: 0 2px;
+}
+.collected-select-all {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+.collected-photo-list {
+    max-height: 150px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.collected-item {
+    background: #fff;
+    border: 1px solid #e4e6eb;
+    border-radius: 4px;
+    padding: 4px 6px;
+    transition: background 0.15s;
+}
+.collected-item:hover {
+    background: #f0f2f5;
+}
+.collected-item-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    margin: 0;
+    user-select: none;
+}
+.collected-item-check {
+    margin: 0;
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+}
+.collected-thumb {
+    width: 36px;
+    height: 36px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #ddd;
+    flex-shrink: 0;
+}
+.collected-item-info {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.collected-item-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: #050505;
+}
+.collected-item-dim {
+    font-size: 10px;
+    color: #8a8d91;
+}

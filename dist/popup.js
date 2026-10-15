@@ -20,6 +20,13 @@
     status: $("status"),
     summary: $("summary")
   };
+  var elCollected = {
+    section: $("collectedSection"),
+    selectedCount: $("collectedSelectedCount"),
+    totalCount: $("collectedTotalCount"),
+    selectAll: $("selectAllCollected"),
+    list: $("collectedPhotoList")
+  };
   var elChecked = {
     count: $("checkedCount"),
     clear: $("clearCheckedBtn"),
@@ -39,6 +46,7 @@
   var SCAN_MAX_AGE = 6e5;
   var ACTIVE_JOB_STATES = ["running", "zipping", "saving", "fallback"];
   var photos = [];
+  var selectedPhotoIndices = /* @__PURE__ */ new Set();
   var ERROR_TEXT = {
     NO_PHOTOS: "No photos found on this page.",
     AMBIGUOUS_POST: "Could not confidently identify the post.\nPlease open the post and try again.",
@@ -53,11 +61,71 @@
     el.bar.value = p;
     el.pct.textContent = String(p);
   }
+  function updateDownloadButtonsState() {
+    const count = selectedPhotoIndices.size;
+    el.download.disabled = count === 0;
+    el.direct.disabled = count === 0;
+    elCollected.selectedCount.textContent = String(count);
+    elCollected.totalCount.textContent = String(photos.length);
+    elCollected.selectAll.checked = photos.length > 0 && count === photos.length;
+  }
+  function renderCollectedPhotosList() {
+    if (photos.length === 0) {
+      elCollected.section.hidden = true;
+      elCollected.list.innerHTML = "";
+      return;
+    }
+    elCollected.section.hidden = false;
+    elCollected.list.innerHTML = "";
+    photos.forEach((photo, idx) => {
+      const isChecked = selectedPhotoIndices.has(idx);
+      const itemEl = document.createElement("div");
+      itemEl.className = "collected-item";
+      const label = document.createElement("label");
+      label.className = "collected-item-label";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "collected-item-check";
+      checkbox.checked = isChecked;
+      checkbox.addEventListener("change", (e) => {
+        e.stopPropagation();
+        if (checkbox.checked) {
+          selectedPhotoIndices.add(idx);
+        } else {
+          selectedPhotoIndices.delete(idx);
+        }
+        updateDownloadButtonsState();
+      });
+      const img = document.createElement("img");
+      img.className = "collected-thumb";
+      img.src = photo.url;
+      img.alt = `Photo ${idx + 1}`;
+      img.onerror = () => {
+        img.style.display = "none";
+      };
+      const info = document.createElement("div");
+      info.className = "collected-item-info";
+      const name = document.createElement("span");
+      name.className = "collected-item-name";
+      name.textContent = `Photo ${idx + 1}`;
+      const dim = document.createElement("span");
+      dim.className = "collected-item-dim";
+      dim.textContent = photo.width && photo.height ? `${photo.width} \xD7 ${photo.height}` : "Original";
+      info.appendChild(name);
+      info.appendChild(dim);
+      label.appendChild(checkbox);
+      label.appendChild(img);
+      label.appendChild(info);
+      itemEl.appendChild(label);
+      elCollected.list.appendChild(itemEl);
+    });
+  }
   function setPhotos(list) {
     photos = list;
     el.found.textContent = String(list.length);
-    el.download.disabled = list.length === 0;
-    el.direct.disabled = list.length === 0;
+    selectedPhotoIndices = new Set(list.map((_, i) => i));
+    renderCollectedPhotosList();
+    updateDownloadButtonsState();
   }
   async function getFacebookTab() {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -209,14 +277,16 @@
     }
   }
   async function startDownload(kind) {
-    await startDownloadUrls(kind, photos.map((p) => p.url));
+    const selectedPhotos = photos.filter((_, i) => selectedPhotoIndices.has(i));
+    if (!selectedPhotos.length) return;
+    await startDownloadUrls(kind, selectedPhotos.map((p) => p.url));
   }
   function renderJob(job) {
     if (!job || job.state === "idle") return;
     const busy = ACTIVE_JOB_STATES.includes(job.state);
     el.detect.disabled = busy;
-    el.download.disabled = busy || photos.length === 0;
-    el.direct.disabled = busy || photos.length === 0;
+    el.download.disabled = busy || selectedPhotoIndices.size === 0;
+    el.direct.disabled = busy || selectedPhotoIndices.size === 0;
     const done = (job.downloaded || 0) + (job.failed || 0);
     switch (job.state) {
       case "running":
@@ -727,6 +797,19 @@ ${job.failed || 0} failed`;
   el.clear.addEventListener("click", () => void clearPhotos());
   el.download.addEventListener("click", () => void startDownload("START_DOWNLOAD"));
   el.direct.addEventListener("click", () => void startDownload("START_DIRECT"));
+  elCollected.selectAll.addEventListener("change", () => {
+    const shouldCheck = elCollected.selectAll.checked;
+    if (shouldCheck) {
+      selectedPhotoIndices = new Set(photos.map((_, i) => i));
+    } else {
+      selectedPhotoIndices.clear();
+    }
+    const checkboxes = elCollected.list.querySelectorAll(".collected-item-check");
+    checkboxes.forEach((cb) => {
+      cb.checked = shouldCheck;
+    });
+    updateDownloadButtonsState();
+  });
   elChecked.zip.addEventListener("click", () => void startDownloadUrls("START_DOWNLOAD", checkedPhotos.map((p) => p.url)));
   elChecked.direct.addEventListener("click", () => void startDownloadUrls("START_DIRECT", checkedPhotos.map((p) => p.url)));
   elChecked.clear.addEventListener("click", () => void chrome.storage.local.set({ fb_checked_photos: [] }));

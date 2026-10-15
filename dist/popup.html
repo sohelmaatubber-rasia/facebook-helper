@@ -26,6 +26,17 @@
         <button id="cancelBtn" hidden>Cancel Collection</button>
         <button id="clearBtn" hidden>✕ Clear Collected Photos</button>
 
+        <!-- ================= Collected Photos List with Checkboxes ================= -->
+        <div id="collectedSection" class="collected-box" hidden>
+            <div class="collected-toolbar">
+                <span>Selected: <strong id="collectedSelectedCount">0</strong> / <span id="collectedTotalCount">0</span></span>
+                <label class="collected-select-all">
+                    <input type="checkbox" id="selectAllCollected" checked> Select All
+                </label>
+            </div>
+            <div id="collectedPhotoList" class="collected-photo-list"></div>
+        </div>
+
         <button id="downloadBtn" disabled>Download Photos (ZIP)</button>
         <button id="directBtn" disabled>Download without ZIP</button>
 

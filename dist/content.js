@@ -2,17 +2,27 @@
 (() => {
   // src/content.ts
   var CONFIG = {
-    clusterGap: 24,
+    clusterGap: 50,
     // px: photos closer than this belong to one media block
-    minFallbackSize: 120,
+    minFallbackSize: 100,
     // px: ignore small <img> (icons, avatars) in fallback
     ambiguityRatio: 1.5,
     // best cluster must be this much more visible than 2nd
     highlightMs: 4e3
   };
-  var PHOTO_LINK_SELECTOR = 'a[href*="/photo/"], a[href*="/photo.php"], a[href*="/photos/"]';
+  var PHOTO_LINK_SELECTOR = 'a[href*="/photo/"], a[href*="/photo?"], a[href*="/photo.php"], a[href*="/photos/"], a[href*="/photos?"]';
   var SINGLE_POST_URL_RE = /\/posts\/|\/permalink|\/photo\/?$|\/photo\.php|\/photos\/|story\.php|\/share\/p\//;
   var OVERLAY_COUNT_RE = /^\+\s*(\d{1,4})$/;
+  function getPostContainer(el) {
+    return el.closest(
+      '[role="article"], div[data-pagelet*="FeedUnit"], div[data-ad-preview="message"], div[data-virtualized="false"]'
+    );
+  }
+  function samePost(a, b) {
+    const cA = getPostContainer(a);
+    const cB = getPostContainer(b);
+    return Boolean(cA && cB && cA === cB);
+  }
   function normalizeDigits(str) {
     return str.replace(/[০-৯]/g, (d) => String(d.charCodeAt(0) - 2534)).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632));
   }
@@ -103,7 +113,7 @@
       fbid = u.searchParams.get("fbid") || "";
       setId = u.searchParams.get("set") || "";
       if (!fbid) {
-        const m = u.pathname.match(/\/photos\/[^/]+\/(\d+)/);
+        const m = u.pathname.match(/\/photos?\/[^/]*\/(\d+)/) || u.pathname.match(/\/photo\/(\d+)/);
         if (m) fbid = m[1];
       }
     } catch (_) {
@@ -129,7 +139,7 @@
     document.querySelectorAll(PHOTO_LINK_SELECTOR).forEach((link) => {
       const img = link.querySelector("img");
       if (!img) return;
-      const rect = docRect(link) || docRect(img);
+      const rect = docRect(img) || docRect(link);
       if (!rect) return;
       used.add(img);
       items.push(makeItem("link", img, rect, parsePhotoHref(link)));
@@ -151,7 +161,9 @@
   function clusterByGeometry(items) {
     let clusters = [];
     for (const it of items) {
-      const hit = clusters.filter((c) => touches(c.box, it.rect));
+      const hit = clusters.filter(
+        (c) => touches(c.box, it.rect, CONFIG.clusterGap) || c.items.some((m) => samePost(m.img, it.img))
+      );
       if (!hit.length) {
         clusters.push({ items: [it], box: { ...it.rect } });
         continue;
@@ -170,6 +182,11 @@
   function splitBySet(clusters) {
     const out = [];
     for (const c of clusters) {
+      const firstPost = getPostContainer(c.items[0].img);
+      if (firstPost && c.items.every((i) => getPostContainer(i.img) === firstPost)) {
+        out.push(c);
+        continue;
+      }
       const sets = new Set(c.items.map((i) => i.setId).filter(Boolean));
       if (sets.size <= 1) {
         out.push(c);
@@ -251,7 +268,9 @@
     const members = [...cluster.items];
     if (linkItems.length) {
       items.forEach((i) => {
-        if (i.source === "img" && touches(cluster.box, i.rect)) members.push(i);
+        if (i.source === "img" && (touches(cluster.box, i.rect, CONFIG.clusterGap) || cluster.items.some((m) => samePost(m.img, i.img)))) {
+          members.push(i);
+        }
       });
     } else {
       confidence = "low";
@@ -280,7 +299,7 @@
     const byKey = /* @__PURE__ */ new Map();
     for (const p of list) {
       if (!p.url) continue;
-      const key = dedupeKey(p.url);
+      const key = p.fbid ? `fbid_${p.fbid}` : dedupeKey(p.url);
       const prev = byKey.get(key);
       if (!prev || p.width >= prev.width) byKey.set(key, p);
     }
