@@ -707,7 +707,14 @@ async function collectAll(): Promise<void> {
   const wasInViewer = isViewerUrl();
   const initial = analyze();
   const initialPhotos = initial.ok ? initial.photos : [];
-  const expected = initial.ok ? initial.photos.length + initial.hiddenCount : 0;
+  // Facebook puts the +N overlay on top of the last visible tile.
+  // The overlay number N represents the remaining photos starting from that tile,
+  // so the total is (initialPhotos.length - 1) + initial.hiddenCount.
+  const expected = initial.ok
+    ? initial.hiddenCount > 0
+      ? Math.max(initial.photos.length, initial.photos.length - 1 + initial.hiddenCount)
+      : initial.photos.length
+    : 0;
   const maxSteps = Math.min(400, expected + 15) || 400;
   const progress = (map: Map<string, ViewerSnapshot>): void =>
     report({

@@ -299,7 +299,7 @@ function renderScan(scan: Scan | undefined): void {
       setStatus(
         stalled
           ? "Collection seems stalled (the page may have reloaded). Try again."
-          : `Collecting photos... ${collected}${scan.expected ? " / ~" + scan.expected : ""}`,
+          : `Collecting photos... ${collected}${scan.expected ? " / " + scan.expected : ""}`,
         stalled
       );
       break;
@@ -312,9 +312,7 @@ function renderScan(scan: Scan | undefined): void {
       el.clear.hidden = false; // show the clear button after collection finishes
       setPhotos(done);
       setProgress(100);
-      setStatus(
-        `Collected ${done.length} photos${scan.expected ? ` (expected about ${scan.expected})` : ""}. Ready to download.`
-      );
+      setStatus(`Collected ${done.length} photos. Ready to download.`);
       break;
     }
     case "error":

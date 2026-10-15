@@ -227,7 +227,7 @@
         el.collect.hidden = false;
         setProgress(scan.expected ? collected / scan.expected * 100 : 0);
         setStatus(
-          stalled ? "Collection seems stalled (the page may have reloaded). Try again." : `Collecting photos... ${collected}${scan.expected ? " / ~" + scan.expected : ""}`,
+          stalled ? "Collection seems stalled (the page may have reloaded). Try again." : `Collecting photos... ${collected}${scan.expected ? " / " + scan.expected : ""}`,
           stalled
         );
         break;
@@ -240,9 +240,7 @@
         el.clear.hidden = false;
         setPhotos(done);
         setProgress(100);
-        setStatus(
-          `Collected ${done.length} photos${scan.expected ? ` (expected about ${scan.expected})` : ""}. Ready to download.`
-        );
+        setStatus(`Collected ${done.length} photos. Ready to download.`);
         break;
       }
       case "error":
