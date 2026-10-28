@@ -32,9 +32,9 @@
     mod
   ));
 
-  // node_modules/jszip/dist/jszip.min.js
+  // ../facebook-helper/facebook-helper-ts-v1/node_modules/jszip/dist/jszip.min.js
   var require_jszip_min = __commonJS({
-    "node_modules/jszip/dist/jszip.min.js"(exports, module) {
+    "../facebook-helper/facebook-helper-ts-v1/node_modules/jszip/dist/jszip.min.js"(exports, module) {
       !(function(e) {
         if ("object" == typeof exports && "undefined" != typeof module) module.exports = e();
         else if ("function" == typeof define && define.amd) define([], e);
@@ -2416,7 +2416,8 @@
       if (message.target !== "offscreen") return;
       if (message.type === "BUILD_ZIP") {
         sendResponse({ ok: true });
-        void buildZip(message.urls);
+        const req = message;
+        void buildZip(req.urls, req.items, req.zipName);
       }
     }
   );
@@ -2490,22 +2491,36 @@
     throw lastError;
   }
   var errorMessage = (err) => err instanceof Error ? err.message : String(err);
-  async function buildZip(urls) {
-    const total = urls.length;
+  async function buildZip(urls, items, zipName) {
+    const isBulk = Array.isArray(items) && items.length > 0;
+    const total = isBulk ? items.length : urls?.length || 0;
+    if (total === 0) {
+      send({ type: "ZIP_ERROR", message: "No URLs or items provided for ZIP.", failed: 0, total: 0 });
+      return;
+    }
     const padWidth = Math.max(3, String(total).length);
     const zip = new import_jszip.default();
     let downloaded = 0;
     let failures = [];
-    const nameFor = (i, ext) => `photo-${String(i + 1).padStart(padWidth, "0")}.${ext}`;
+    const getUrl = (i) => isBulk ? items[i].url : urls[i];
+    const filePathFor = (i, ext) => {
+      if (isBulk) {
+        const it = items[i];
+        const base = it.filename ? it.filename.replace(/\.[^.]+$/, "") : `photo_${String(i + 1).padStart(padWidth, "0")}`;
+        return `${it.folder}/${base}.${ext}`;
+      }
+      return `photo-${String(i + 1).padStart(padWidth, "0")}.${ext}`;
+    };
     const report = () => send({ type: "PROGRESS", downloaded, failed: failures.length, total });
     async function tryDownload(i) {
+      const url = getUrl(i);
       try {
-        const { blob, ext } = await fetchImage(urls[i]);
-        zip.file(nameFor(i, ext), blob, { binary: true });
+        const { blob, ext } = await fetchImage(url);
+        zip.file(filePathFor(i, ext), blob, { binary: true });
         downloaded++;
         return null;
       } catch (err) {
-        return { index: i, url: urls[i], error: errorMessage(err) };
+        return { index: i, url, error: errorMessage(err) };
       }
     }
     try {
@@ -2542,7 +2557,10 @@
         return;
       }
       if (failures.length) {
-        const lines = failures.map((f) => `#${f.index + 1}	${f.error}	${f.url}`);
+        const lines = failures.map((f) => {
+          const path = isBulk ? `${items[f.index].folder}/${items[f.index].filename}` : `#${f.index + 1}`;
+          return `${path}	${f.error}	${f.url}`;
+        });
         zip.file("failed-photos.txt", lines.join("\n"));
       }
       send({ type: "ZIPPING", percent: 0 });
@@ -2564,7 +2582,8 @@
         downloaded,
         failed: failures.length,
         failureSummary,
-        failures
+        failures,
+        zipName: zipName || (isBulk ? "Facebook_Bulk_Photos.zip" : void 0)
       });
     } catch (err) {
       send({ type: "ZIP_ERROR", message: `ZIP creation failed: ${errorMessage(err)}`, failed: failures.length, total });

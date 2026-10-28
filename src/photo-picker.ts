@@ -1,382 +1,386 @@
 /**
- * photo-picker.ts — Scroll & Checkmark Photo Selector for Facebook.
+ * photo-picker.ts — Multiple Facebook Post Selection & Per-Post Checkbox System.
  *
- * Runs automatically as a content script on Facebook.
- * Places a clean, non-destructive checkmark (☑ / ☐) on photos as the user
- * scrolls through feeds, albums, or posts.
+ * Runs automatically as a content script on Facebook (manifest.json).
+ * Attaches a clean, unobtrusive checkbox (☑ / ☐) to each supported Facebook feed post.
+ *
  * Provides:
- *   1. An on-page floating toolbar with photo count, Download All (ZIP), Direct, and Clear.
- *   2. Real-time sync with chrome.storage.local ("fb_checked_photos") so the popup can also
- *      show and download the selected photos.
- *
- * Does NOT touch or modify content.ts or any existing post-detection algorithms.
+ *   1. Per-post selection with stable identification and canonical permalinks.
+ *   2. Selection persistence across feed navigation and dynamic DOM rerenders.
+ *   3. Real-time sync with chrome.storage.local ("fb_selected_posts") so the extension popup
+ *      and other tabs stay perfectly in sync.
+ *   4. Zero on-page floating toolbar clutter (all controls live inside the extension popup).
+ *   5. Message listener responding to popup actions (select, clear, download).
  */
 
-import type { CheckedPhotoItem } from "./types";
+import {
+  POST_ATTR_ID,
+  executeBulkDownload as runBulkDownload,
+  extractAuthorProfilePicture,
+  extractPhotosFromPost,
+  findFeedPosts,
+  getPostIdentifier,
+  selectCurrentPostAction,
+  type PostIdentifier,
+} from "./photo-extractor";
+import type {
+  ContentRequest,
+  Photo,
+  SelectedPost,
+} from "./types";
 
-const STORAGE_KEY = "fb_checked_photos";
-const CHECKBOX_WRAPPER_CLASS = "fb-helper-check-wrapper";
-const CHECKBOX_CLASS = "fb-helper-check-box";
+const STORAGE_KEY = "fb_selected_posts";
+const POST_CHECKBOX_WRAPPER_CLASS = "fb-post-check-wrapper";
+const POST_CHECKBOX_BOX_CLASS = "fb-post-check-box";
 
-let checkedPhotos: CheckedPhotoItem[] = [];
-let checkedMap = new Map<string, CheckedPhotoItem>();
+let selectedPosts: SelectedPost[] = [];
+let selectedMap = new Map<string, SelectedPost>();
 
-// ---- CSS Injection
+// ---- CSS Injection (Only for per-post checkboxes, no floating bar)
 function injectStyles(): void {
-  if (document.getElementById("fb-helper-picker-styles")) return;
+  // Clean up any obsolete floating bar from previous injections
+  document.getElementById("fb-helper-floating-bar")?.remove();
+
+  if (document.getElementById("fb-helper-post-picker-styles")) return;
   const style = document.createElement("style");
-  style.id = "fb-helper-picker-styles";
+  style.id = "fb-helper-post-picker-styles";
   style.textContent = `
-    .${CHECKBOX_WRAPPER_CLASS} {
+    .${POST_CHECKBOX_WRAPPER_CLASS} {
       position: absolute !important;
-      top: 10px !important;
-      left: 10px !important;
-      z-index: 2147483640 !important;
-      pointer-events: auto !important;
+      top: 12px !important;
+      right: 54px !important;
+      z-index: 1000 !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 6px !important;
       user-select: none !important;
-      line-height: 0 !important;
-    }
-    .${CHECKBOX_CLASS} {
-      width: 28px !important;
-      height: 28px !important;
-      border-radius: 6px !important;
-      background: rgba(0, 0, 0, 0.45) !important;
-      border: 2px solid rgba(255, 255, 255, 0.9) !important;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4) !important;
       cursor: pointer !important;
+      padding: 3px 8px !important;
+      border-radius: 6px !important;
+      background: rgba(255, 255, 255, 0.96) !important;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18) !important;
+      border: 1px solid rgba(0, 0, 0, 0.15) !important;
+      transition: opacity 0.18s ease, transform 0.15s ease, background 0.15s ease !important;
+      line-height: 1 !important;
+      pointer-events: auto !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+    }
+
+    /* Reveal checkbox on post hover, wrapper hover, or focus */
+    [role="article"]:hover > .${POST_CHECKBOX_WRAPPER_CLASS},
+    [data-fb-helper-post]:hover > .${POST_CHECKBOX_WRAPPER_CLASS},
+    div[data-pagelet*="FeedUnit"]:hover .${POST_CHECKBOX_WRAPPER_CLASS},
+    .fb-helper-post-target:hover .${POST_CHECKBOX_WRAPPER_CLASS},
+    .${POST_CHECKBOX_WRAPPER_CLASS}:hover,
+    .${POST_CHECKBOX_WRAPPER_CLASS}:focus-within {
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+
+    /* Keep permanently visible when selected / checked */
+    .${POST_CHECKBOX_WRAPPER_CLASS}.checked {
+      opacity: 1 !important;
+      visibility: visible !important;
+      background: #e7f3ff !important;
+      border-color: #1877f2 !important;
+    }
+
+    .${POST_CHECKBOX_WRAPPER_CLASS}:hover {
+      transform: scale(1.03) !important;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22) !important;
+    }
+
+    .${POST_CHECKBOX_BOX_CLASS} {
+      width: 17px !important;
+      height: 17px !important;
+      border-radius: 4px !important;
+      background: #ffffff !important;
+      border: 2px solid #8a8d91 !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      transition: all 0.15s ease !important;
+      transition: all 0.12s ease !important;
       box-sizing: border-box !important;
+      pointer-events: none !important;
+      flex-shrink: 0 !important;
     }
-    .${CHECKBOX_CLASS}:hover {
-      background: rgba(0, 0, 0, 0.75) !important;
-      border-color: #ffffff !important;
-      transform: scale(1.08) !important;
-    }
-    .${CHECKBOX_CLASS}.checked {
+
+    .${POST_CHECKBOX_BOX_CLASS}.checked {
       background: #1877f2 !important;
-      border-color: #ffffff !important;
-      box-shadow: 0 2px 8px rgba(24, 119, 242, 0.7) !important;
-      transform: scale(1.04) !important;
+      border-color: #1877f2 !important;
     }
-    .${CHECKBOX_CLASS} svg {
-      width: 16px !important;
-      height: 16px !important;
+
+    .${POST_CHECKBOX_BOX_CLASS} svg {
+      width: 11px !important;
+      height: 11px !important;
       fill: #ffffff !important;
       pointer-events: none !important;
     }
-    #fb-helper-floating-bar {
-      position: fixed !important;
-      bottom: 24px !important;
-      right: 24px !important;
-      z-index: 2147483647 !important;
-      background: #1c1e21 !important;
-      color: #e4e6eb !important;
-      border: 1px solid #3a3b3c !important;
-      border-radius: 12px !important;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
-      padding: 10px 14px !important;
-      display: none;
-      align-items: center !important;
-      gap: 10px !important;
+
+    .fb-post-check-text {
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      color: #4b4f56 !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
-      font-size: 13px !important;
       line-height: 1 !important;
-      transition: opacity 0.2s ease, transform 0.2s ease !important;
+      pointer-events: none !important;
+      white-space: nowrap !important;
     }
-    #fb-picker-float-zip:hover { background: #166fe5 !important; }
-    #fb-picker-float-direct:hover { background: #4e4f50 !important; }
-    #fb-picker-float-clear:hover { border-color: #fa383e !important; color: #fa383e !important; background: rgba(250, 56, 62, 0.1) !important; }
+
+    .${POST_CHECKBOX_WRAPPER_CLASS}.checked .fb-post-check-text {
+      color: #1877f2 !important;
+    }
+
+    /* Dark mode support */
+    @media (prefers-color-scheme: dark) {
+      .${POST_CHECKBOX_WRAPPER_CLASS} {
+        background: rgba(36, 37, 38, 0.95) !important;
+        border-color: #3e4042 !important;
+      }
+      .fb-post-check-text {
+        color: #e4e6eb !important;
+      }
+      .${POST_CHECKBOX_WRAPPER_CLASS}.checked {
+        background: #182f4d !important;
+        border-color: #2e89ff !important;
+      }
+      .${POST_CHECKBOX_WRAPPER_CLASS}.checked .fb-post-check-text {
+        color: #2e89ff !important;
+      }
+    }
   `;
   (document.head || document.documentElement).appendChild(style);
 }
 
-// ---- Best Resolution URL Extraction
-function getBestPhotoUrl(img: HTMLImageElement): string {
-  if (img.srcset) {
-    const candidates = img.srcset.split(",").map((entry) => {
-      const parts = entry.trim().split(/\s+/);
-      const url = parts[0];
-      const descriptor = parts[1] || "";
-      const width = descriptor.endsWith("w") ? parseInt(descriptor, 10) : 0;
-      return { url, width };
-    });
-    candidates.sort((a, b) => b.width - a.width);
-    if (candidates[0]?.url) return candidates[0].url;
-  }
-  return img.currentSrc || img.src;
-}
-
-// ---- Stable Photo Identification
-function getPhotoId(url: string, container: HTMLElement): string {
-  if (container instanceof HTMLAnchorElement && container.href) {
-    const m = container.href.match(/[?&]fbid=(\d+)/) || container.href.match(/\/photos?\/[^/]+\/(\d+)/);
-    if (m) return `fb_${m[1]}`;
-  }
-  try {
-    const u = new URL(url);
-    const filename = u.pathname.split("/").pop() || u.pathname;
-    return `url_${filename}`;
-  } catch {
-    return `p_${url.slice(-32)}`;
-  }
-}
-
-// ---- Photo Candidate Filtering
-function isPhotoCandidate(img: HTMLImageElement): boolean {
-  if (!img.src || img.src.startsWith("data:") || img.src.endsWith(".svg")) return false;
-  // Ignore icons, emoji, avatars, tracking pixels
-  if (img.src.includes("/rsrc.php/") || img.src.includes("/emoji.php") || img.src.includes("static.xx.fbcdn.net")) {
-    return false;
-  }
-
-  // Check element bounding box or natural dimensions
-  const rect = img.getBoundingClientRect();
-  const w = rect.width || img.naturalWidth || img.clientWidth || img.width;
-  const h = rect.height || img.naturalHeight || img.clientHeight || img.height;
-  if (w < 80 || h < 80) return false;
-
-  // Ignore avatars / profile pictures and comment inputs
-  if (img.closest('form, [role="textbox"], [data-visualcompletion="ignore-dynamic-extra"]')) return false;
-  const label = (img.getAttribute("aria-label") || "").toLowerCase();
-  if (label.includes("profile picture") || label.includes("avatar")) return false;
-
-  return true;
-}
-
-// ---- Attach Checkmark Overlay
-function attachCheckbox(img: HTMLImageElement): void {
-  // Find container
-  const link = img.closest('a[href*="/photo"], a[href*="/photos/"], a[role="link"], div[role="link"]') as HTMLElement | null;
-  const container = link || img.parentElement;
-  if (!container) return;
-
+// ---- Attach Checkbox to Post
+function attachCheckboxToPost(postEl: HTMLElement): void {
   // Already has our checkbox?
-  if (container.querySelector(`.${CHECKBOX_WRAPPER_CLASS}`)) return;
+  if (postEl.querySelector(`.${POST_CHECKBOX_WRAPPER_CLASS}`)) return;
 
-  // Ensure positioned container
-  const style = window.getComputedStyle(container);
+  const style = window.getComputedStyle(postEl);
   if (style.position === "static") {
-    container.style.position = "relative";
+    postEl.style.position = "relative";
   }
+  postEl.classList.add("fb-helper-post-target");
+  postEl.setAttribute("data-fb-helper-post", "true");
 
-  const bestUrl = getBestPhotoUrl(img);
-  if (!bestUrl || bestUrl.startsWith("data:")) return;
+  const postInfo = getPostIdentifier(postEl);
+  postEl.setAttribute(POST_ATTR_ID, postInfo.id);
 
-  const photoId = getPhotoId(bestUrl, container);
-  const isChecked = checkedMap.has(photoId);
+  const isChecked = selectedMap.has(postInfo.id);
 
   const wrapper = document.createElement("div");
-  wrapper.className = CHECKBOX_WRAPPER_CLASS;
-  wrapper.setAttribute("data-fb-helper-id", photoId);
+  wrapper.className = `${POST_CHECKBOX_WRAPPER_CLASS} ${isChecked ? "checked" : ""}`;
+  wrapper.setAttribute("data-fb-post-id", postInfo.id);
+  wrapper.tabIndex = 0;
+  wrapper.title = isChecked ? "Selected (click to deselect)" : "Select post for bulk download";
 
   const box = document.createElement("div");
-  box.className = `${CHECKBOX_CLASS} ${isChecked ? "checked" : ""}`;
-  box.title = isChecked ? "Checked (click to uncheck)" : "Check to download";
+  box.className = `${POST_CHECKBOX_BOX_CLASS} ${isChecked ? "checked" : ""}`;
   box.innerHTML = `
     <svg viewBox="0 0 24 24" style="display: ${isChecked ? "block" : "none"};">
       <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
     </svg>
   `;
 
-  // Intercept click cleanly without swallowing pointerdown in capture phase
-  const handleToggle = (e: MouseEvent): void => {
+  const label = document.createElement("span");
+  label.className = "fb-post-check-text";
+  label.textContent = isChecked ? "Selected" : "Select";
+
+  const handleToggle = (e: Event): void => {
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    const freshUrl = getBestPhotoUrl(img) || bestUrl;
-    togglePhoto(photoId, freshUrl);
+    togglePostSelection(postInfo, postEl);
   };
 
-  box.addEventListener("click", handleToggle);
-  box.addEventListener("mousedown", (e) => e.stopPropagation());
+  wrapper.addEventListener("click", handleToggle);
+  wrapper.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      handleToggle(e);
+    }
+  });
+  wrapper.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  });
+  wrapper.addEventListener("mouseup", (e) => {
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  });
 
   wrapper.appendChild(box);
-  container.appendChild(wrapper);
+  wrapper.appendChild(label);
+  postEl.appendChild(wrapper);
 }
 
-// ---- Toggle Photo State
-function togglePhoto(id: string, url: string): void {
-  if (checkedMap.has(id)) {
-    checkedPhotos = checkedPhotos.filter((p) => p.id !== id);
-    checkedMap.delete(id);
+// ---- Toggle Post Selection
+function togglePostSelection(
+  info: PostIdentifier,
+  postEl?: HTMLElement
+): void {
+  if (selectedMap.has(info.id)) {
+    selectedPosts = selectedPosts.filter((p) => p.id !== info.id);
+    selectedMap.delete(info.id);
   } else {
-    const item: CheckedPhotoItem = { id, url, addedAt: Date.now() };
-    checkedPhotos.push(item);
-    checkedMap.set(id, item);
+    // Extract photos now while post is in DOM
+    let photos: Photo[] = [];
+    let hiddenCount = 0;
+    if (postEl) {
+      const extracted = extractPhotosFromPost(postEl);
+      photos = extracted.photos;
+      hiddenCount = extracted.hiddenCount;
+    }
+
+    const postPhotoThumb = photos[0]?.url || info.postThumbnailUrl || "";
+    const profilePicThumb = info.profilePictureUrl || (postEl ? extractAuthorProfilePicture(postEl, info.authorName) : "");
+    const bestThumb = postPhotoThumb || profilePicThumb || "";
+
+    const item: SelectedPost = {
+      id: info.id,
+      url: info.url,
+      authorName: info.authorName,
+      title: info.title || (info.authorName ? `Post by ${info.authorName}` : "Facebook Post"),
+      thumbnailUrl: bestThumb,
+      postThumbnailUrl: postPhotoThumb,
+      profilePictureUrl: profilePicThumb,
+      photoCount: photos.length,
+      photos,
+      hasHidden: hiddenCount > 0,
+      selectedAt: Date.now(),
+      status: "idle",
+    };
+    selectedPosts.push(item);
+    selectedMap.set(info.id, item);
   }
 
-  void chrome.storage.local.set({ [STORAGE_KEY]: checkedPhotos });
-  syncCheckboxVisuals();
-  renderFloatingBar();
+  void chrome.storage.local.set({ [STORAGE_KEY]: selectedPosts });
+  syncPostCheckboxVisuals();
 }
 
 // ---- Sync Visuals across DOM
-function syncCheckboxVisuals(): void {
-  const wrappers = document.querySelectorAll<HTMLElement>(`.${CHECKBOX_WRAPPER_CLASS}`);
+function syncPostCheckboxVisuals(): void {
+  const wrappers = document.querySelectorAll<HTMLElement>(`.${POST_CHECKBOX_WRAPPER_CLASS}`);
   wrappers.forEach((wrapper) => {
-    const id = wrapper.getAttribute("data-fb-helper-id");
+    const id = wrapper.getAttribute("data-fb-post-id");
     if (!id) return;
-    const box = wrapper.querySelector<HTMLElement>(`.${CHECKBOX_CLASS}`);
+    const box = wrapper.querySelector<HTMLElement>(`.${POST_CHECKBOX_BOX_CLASS}`);
     const svg = wrapper.querySelector<SVGElement>("svg");
-    if (!box || !svg) return;
+    const label = wrapper.querySelector<HTMLElement>(".fb-post-check-text");
+    if (!box || !svg || !label) return;
 
-    const isChecked = checkedMap.has(id);
+    const isChecked = selectedMap.has(id);
     if (isChecked) {
+      wrapper.classList.add("checked");
       box.classList.add("checked");
-      box.title = "Checked (click to uncheck)";
+      wrapper.title = "Selected (click to deselect)";
       svg.style.display = "block";
+      label.textContent = "Selected";
     } else {
+      wrapper.classList.remove("checked");
       box.classList.remove("checked");
-      box.title = "Check to download";
+      wrapper.title = "Select post for bulk download";
       svg.style.display = "none";
+      label.textContent = "Select";
     }
   });
 }
 
-// ---- Scan Photos
-function scanPhotos(): void {
-  const images = document.querySelectorAll<HTMLImageElement>("img");
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
-    if (isPhotoCandidate(img)) {
-      attachCheckbox(img);
-    }
+// ---- Select Current Post
+export async function selectCurrentPost(): Promise<void> {
+  const res = await selectCurrentPostAction();
+  if (res.ok) {
+    selectedPosts = res.posts;
+    selectedMap = new Map(selectedPosts.map((p) => [p.id, p]));
+    syncPostCheckboxVisuals();
   }
 }
 
-// ---- On-Page Floating Toolbar
-let floatingBar: HTMLElement | null = null;
+export const selectAllVisiblePosts = selectCurrentPost;
 
-function ensureFloatingBar(): HTMLElement {
-  if (floatingBar && document.body.contains(floatingBar)) {
-    return floatingBar;
-  }
+// ---- Clear All Selections
+export function clearPostSelection(): void {
+  selectedPosts = [];
+  selectedMap.clear();
+  void chrome.storage.local.set({ [STORAGE_KEY]: [] });
+  syncPostCheckboxVisuals();
+}
 
-  const existing = document.getElementById("fb-helper-floating-bar");
-  if (existing) {
-    floatingBar = existing;
-    return floatingBar;
-  }
-
-  const bar = document.createElement("div");
-  bar.id = "fb-helper-floating-bar";
-  bar.style.setProperty("display", "none", "important");
-  bar.innerHTML = `
-    <div style="display:flex;align-items:center;gap:6px;font-weight:600;">
-      <span style="font-size:16px;">📷</span>
-      <span>Selected: <strong id="fb-picker-float-count" style="color:#2e89ff;font-size:14px;">0</strong></span>
-    </div>
-    <button id="fb-picker-float-zip" style="background:#1877f2;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-weight:600;font-size:12px;cursor:pointer;">
-      📥 Download ZIP
-    </button>
-    <button id="fb-picker-float-direct" style="background:#3a3b3c;color:#e4e6eb;border:none;border-radius:6px;padding:6px 10px;font-weight:600;font-size:12px;cursor:pointer;">
-      ⚡ Direct
-    </button>
-    <button id="fb-picker-float-clear" style="background:transparent;color:#b0b3b8;border:1px solid #4e4f50;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">
-      ✕ Clear
-    </button>
-    <span id="fb-picker-float-status" style="font-size:11px;color:#31a24c;font-weight:500;"></span>
-  `;
-
-  document.body.appendChild(bar);
-  floatingBar = bar;
-
-  const zipBtn = bar.querySelector<HTMLButtonElement>("#fb-picker-float-zip")!;
-  const directBtn = bar.querySelector<HTMLButtonElement>("#fb-picker-float-direct")!;
-  const clearBtn = bar.querySelector<HTMLButtonElement>("#fb-picker-float-clear")!;
-  const statusSpan = bar.querySelector<HTMLSpanElement>("#fb-picker-float-status")!;
-
-  const showStatus = (msg: string, isError = false): void => {
-    statusSpan.textContent = msg;
-    statusSpan.style.color = isError ? "#fa383e" : "#31a24c";
-    window.setTimeout(() => {
-      if (statusSpan.textContent === msg) statusSpan.textContent = "";
-    }, 4000);
-  };
-
-  zipBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    if (checkedPhotos.length === 0) return;
-    zipBtn.disabled = true;
-    showStatus("Starting ZIP download...");
-    try {
-      const urls = checkedPhotos.map((p) => p.url);
-      const res = (await chrome.runtime.sendMessage({ type: "START_DOWNLOAD", urls })) as { ok?: boolean } | undefined;
-      if (res?.ok) {
-        showStatus("ZIP downloading!");
-      } else {
-        showStatus("Download failed", true);
+// ---- Scan Posts in Feed
+function scanPosts(): void {
+  const posts = findFeedPosts();
+  let updatedAny = false;
+  for (let i = 0; i < posts.length; i++) {
+    const postEl = posts[i];
+    attachCheckboxToPost(postEl);
+    const id = postEl.getAttribute(POST_ATTR_ID);
+    if (id && selectedMap.has(id)) {
+      const existing = selectedMap.get(id)!;
+      // If no post thumbnail or empty photos, check if photos are now available in DOM
+      if (!existing.postThumbnailUrl || !existing.photos?.length) {
+        const extracted = extractPhotosFromPost(postEl);
+        if (extracted.photos.length > 0) {
+          existing.photos = extracted.photos;
+          existing.photoCount = extracted.photos.length;
+          existing.postThumbnailUrl = extracted.photos[0].url;
+          existing.thumbnailUrl = extracted.photos[0].url;
+          updatedAny = true;
+        }
       }
-    } catch (err) {
-      showStatus("Error: " + String(err), true);
-    } finally {
-      zipBtn.disabled = false;
-    }
-  });
-
-  directBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    if (checkedPhotos.length === 0) return;
-    directBtn.disabled = true;
-    showStatus("Saving directly...");
-    try {
-      const urls = checkedPhotos.map((p) => p.url);
-      const res = (await chrome.runtime.sendMessage({ type: "START_DIRECT", urls })) as { ok?: boolean } | undefined;
-      if (res?.ok) {
-        showStatus("Saving photos!");
-      } else {
-        showStatus("Direct download failed", true);
+      // If author profile picture was not found initially, attempt discovery now
+      if (!existing.profilePictureUrl) {
+        const profPic = extractAuthorProfilePicture(postEl, existing.authorName);
+        if (profPic) {
+          existing.profilePictureUrl = profPic;
+          if (!existing.thumbnailUrl) {
+            existing.thumbnailUrl = profPic;
+          }
+          updatedAny = true;
+        }
       }
-    } catch (err) {
-      showStatus("Error: " + String(err), true);
-    } finally {
-      directBtn.disabled = false;
     }
-  });
-
-  clearBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    void chrome.storage.local.set({ [STORAGE_KEY]: [] });
-  });
-
-  return bar;
+  }
+  if (updatedAny) {
+    void chrome.storage.local.set({ [STORAGE_KEY]: selectedPosts });
+  }
 }
 
-function renderFloatingBar(): void {
-  const bar = ensureFloatingBar();
-  const countEl = bar.querySelector<HTMLElement>("#fb-picker-float-count");
-  if (countEl) countEl.textContent = String(checkedPhotos.length);
-
-  if (checkedPhotos.length > 0) {
-    bar.style.setProperty("display", "flex", "important");
-  } else {
-    bar.style.setProperty("display", "none", "important");
-  }
+// ---- Bulk Photo Collection and Download Execution
+export async function executeBulkDownload(mode: "zip" | "direct", retryOnly = false): Promise<void> {
+  await runBulkDownload(mode, retryOnly);
 }
 
 // ---- Init & Event Listeners
 async function init(): Promise<void> {
   injectStyles();
 
-  // Load initial checked photos
-  const result = (await chrome.storage.local.get(STORAGE_KEY)) as { [STORAGE_KEY]?: CheckedPhotoItem[] };
-  checkedPhotos = result[STORAGE_KEY] || [];
-  checkedMap = new Map(checkedPhotos.map((p) => [p.id, p]));
+  // Load saved selected posts
+  try {
+    const result = (await chrome.storage.local.get(STORAGE_KEY)) as { [STORAGE_KEY]?: SelectedPost[] };
+    selectedPosts = result[STORAGE_KEY] || [];
+    selectedMap = new Map(selectedPosts.map((p) => [p.id, p]));
+  } catch (_) {
+    selectedPosts = [];
+    selectedMap = new Map();
+  }
 
-  scanPhotos();
-  renderFloatingBar();
+  scanPosts();
 
-  // Throttled observer for infinite scroll
+  // Throttled observer for infinite scroll & dynamic rerenders
   let scanTimer: number | null = null;
   const scheduleScan = (): void => {
+    if (!chrome.runtime?.id) {
+      observer?.disconnect();
+      return;
+    }
     if (scanTimer !== null) return;
     scanTimer = window.setTimeout(() => {
       scanTimer = null;
-      scanPhotos();
-    }, 300);
+      if (!chrome.runtime?.id) return;
+      scanPosts();
+    }, 280);
   };
 
   const observer = new MutationObserver(scheduleScan);
@@ -386,10 +390,39 @@ async function init(): Promise<void> {
   // Sync changes from popup or another tab
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes[STORAGE_KEY]) {
-      checkedPhotos = (changes[STORAGE_KEY].newValue as CheckedPhotoItem[]) || [];
-      checkedMap = new Map(checkedPhotos.map((p) => [p.id, p]));
-      syncCheckboxVisuals();
-      renderFloatingBar();
+      selectedPosts = (changes[STORAGE_KEY].newValue as SelectedPost[]) || [];
+      selectedMap = new Map(selectedPosts.map((p) => [p.id, p]));
+      syncPostCheckboxVisuals();
+    }
+  });
+
+  // Message listener for popup requests
+  chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResponse) => {
+    if (message.type === "BULK_SELECT_CURRENT_POST" || message.type === "BULK_SELECT_ALL_VISIBLE") {
+      selectCurrentPostAction()
+        .then((res) => {
+          if (res.ok) {
+            selectedPosts = res.posts;
+            selectedMap = new Map(selectedPosts.map((p) => [p.id, p]));
+            syncPostCheckboxVisuals();
+          }
+          sendResponse(res);
+        })
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    } else if (message.type === "BULK_CLEAR_SELECTION") {
+      clearPostSelection();
+      sendResponse({ ok: true });
+    } else if (message.type === "BULK_START_DOWNLOAD") {
+      executeBulkDownload(message.mode)
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    } else if (message.type === "BULK_RETRY_FAILED") {
+      executeBulkDownload(message.mode, true)
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
     }
   });
 }

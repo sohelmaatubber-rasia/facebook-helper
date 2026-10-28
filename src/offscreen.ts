@@ -16,7 +16,7 @@
  *    directly through chrome.downloads (browser network stack) so nothing is lost
  */
 import JSZip from "jszip";
-import type { Failure, OffscreenReport, OffscreenRequest } from "./types";
+import type { BulkPhotoItem, Failure, OffscreenReport, OffscreenRequest } from "./types";
 
 const CONCURRENCY = 2;
 const MAX_RETRIES = 3;
@@ -33,7 +33,8 @@ chrome.runtime.onMessage.addListener(
     if (message.target !== "offscreen") return;
     if ((message as OffscreenRequest).type === "BUILD_ZIP") {
       sendResponse({ ok: true }); // acknowledge immediately; progress is reported separately
-      void buildZip((message as OffscreenRequest).urls);
+      const req = message as OffscreenRequest;
+      void buildZip(req.urls, req.items, req.zipName);
     }
   }
 );
@@ -130,26 +131,42 @@ async function fetchImage(url: string): Promise<FetchedImage> {
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-async function buildZip(urls: string[]): Promise<void> {
-  const total = urls.length;
+async function buildZip(urls?: string[], items?: BulkPhotoItem[], zipName?: string): Promise<void> {
+  const isBulk = Array.isArray(items) && items.length > 0;
+  const total = isBulk ? items.length : urls?.length || 0;
+  if (total === 0) {
+    send({ type: "ZIP_ERROR", message: "No URLs or items provided for ZIP.", failed: 0, total: 0 });
+    return;
+  }
+
   const padWidth = Math.max(3, String(total).length);
   const zip = new JSZip();
   let downloaded = 0;
   let failures: Failure[] = [];
 
-  const nameFor = (i: number, ext: string): string => `photo-${String(i + 1).padStart(padWidth, "0")}.${ext}`;
+  const getUrl = (i: number): string => (isBulk ? items![i].url : urls![i]);
+
+  const filePathFor = (i: number, ext: string): string => {
+    if (isBulk) {
+      const it = items![i];
+      const base = it.filename ? it.filename.replace(/\.[^.]+$/, "") : `photo_${String(i + 1).padStart(padWidth, "0")}`;
+      return `${it.folder}/${base}.${ext}`;
+    }
+    return `photo-${String(i + 1).padStart(padWidth, "0")}.${ext}`;
+  };
+
   const report = (): void => send({ type: "PROGRESS", downloaded, failed: failures.length, total });
 
   /** Returns null on success, or the failure. */
   async function tryDownload(i: number): Promise<Failure | null> {
+    const url = getUrl(i);
     try {
-      const { blob, ext } = await fetchImage(urls[i]);
-      // Index-based name => always unique. A gap (e.g. photo-003 missing) marks a failed photo.
-      zip.file(nameFor(i, ext), blob, { binary: true });
+      const { blob, ext } = await fetchImage(url);
+      zip.file(filePathFor(i, ext), blob, { binary: true });
       downloaded++;
       return null;
     } catch (err) {
-      return { index: i, url: urls[i], error: errorMessage(err) };
+      return { index: i, url, error: errorMessage(err) };
     }
   }
 
@@ -197,7 +214,10 @@ async function buildZip(urls: string[]): Promise<void> {
     }
 
     if (failures.length) {
-      const lines = failures.map((f) => `#${f.index + 1}\t${f.error}\t${f.url}`);
+      const lines = failures.map((f) => {
+        const path = isBulk ? `${items![f.index].folder}/${items![f.index].filename}` : `#${f.index + 1}`;
+        return `${path}\t${f.error}\t${f.url}`;
+      });
       zip.file("failed-photos.txt", lines.join("\n"));
     }
 
@@ -223,6 +243,7 @@ async function buildZip(urls: string[]): Promise<void> {
       failed: failures.length,
       failureSummary,
       failures,
+      zipName: zipName || (isBulk ? "Facebook_Bulk_Photos.zip" : undefined),
     });
   } catch (err) {
     send({ type: "ZIP_ERROR", message: `ZIP creation failed: ${errorMessage(err)}`, failed: failures.length, total });

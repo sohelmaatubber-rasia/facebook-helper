@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Facebook Helper",
-  "version": "1.6.0",
+  "version": "1.6.10",
   "description": "Download photos and manage your own comments on Facebook.",
   "action": {
     "default_popup": "popup.html"
@@ -11,14 +11,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*.facebook.com/*"],
-      "js": ["comment-scanner.js", "photo-picker.js"],
+      "matches": ["https://*.facebook.com/*", "https://facebook.com/*"],
+      "js": ["comment-scanner.js", "photo-picker.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
-  "permissions": ["alarms", "downloads", "offscreen", "scripting", "storage", "tabs"],
+  "permissions": ["alarms", "clipboardWrite", "downloads", "offscreen", "scripting", "storage", "tabs"],
   "host_permissions": [
     "https://*.facebook.com/*",
+    "https://facebook.com/*",
     "https://*.fbcdn.net/*"
   ]
 }

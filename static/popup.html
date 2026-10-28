@@ -17,6 +17,29 @@
 
     <!-- ==================== Photo Downloader Tab ==================== -->
     <section id="sectionPhotos">
+        <!-- ================= Multi-Post Selection & Bulk Download ================= -->
+        <div id="bulkPostSection" class="bulk-box">
+            <div class="bulk-toolbar">
+                <span>Selected Posts: <strong id="bulkPostCount">0</strong></span>
+                <div class="bulk-actions-sm">
+                    <button id="bulkSelectCurrentBtn" class="bulk-btn-link" title="Select the current post on screen">Select Current Post</button>
+                    <button id="bulkClearBtn" class="bulk-btn-link bulk-btn-link-danger" title="Clear selection">Clear</button>
+                </div>
+            </div>
+
+            <!-- Review list of selected posts -->
+            <div id="bulkPostList" class="bulk-post-list" hidden></div>
+
+            <div class="bulk-buttons">
+                <button id="bulkDownloadZipBtn" class="bulk-btn-zip" disabled>📥 Download Selected (ZIP)</button>
+                <button id="bulkDownloadDirectBtn" class="bulk-btn-direct" disabled>⚡ Direct (No ZIP)</button>
+            </div>
+            <button id="bulkCopyBtn" class="bulk-btn-copy" disabled>📋 Copy All Photos</button>
+            <button id="bulkRetryBtn" class="bulk-btn-retry" hidden>↺ Retry Failed Posts</button>
+        </div>
+
+        <div class="section-divider"><span>or single-post download</span></div>
+
         <button id="detectBtn">Detect Photos</button>
 
         <p>Photos Found: <strong id="found">0</strong></p>
@@ -39,6 +62,7 @@
 
         <button id="downloadBtn" disabled>Download Photos (ZIP)</button>
         <button id="directBtn" disabled>Download without ZIP</button>
+        <button id="copyBtn" class="single-btn-copy" disabled hidden>📋 Copy All Photos</button>
 
         <progress id="bar" max="100" value="0"></progress>
         <p>Progress: <span id="pct">0</span>%</p>
@@ -50,12 +74,15 @@
     <!-- ==================== Comment Manager Tab ==================== -->
     <section id="sectionComments" hidden>
 
-        <!-- Actions: Scan comments from active post -->
+        <!-- Actions: Historical & Active Scanning + Import -->
         <div class="cm-scan-box">
-            <button id="cmScanPostBtn" class="cm-btn-scan">📥 Scan Post Comments</button>
+            <div class="cm-scan-buttons">
+                <button id="cmScanPostBtn" class="cm-btn-scan" title="Scan comments on the currently open Facebook post">📥 Scan Post Comments</button>
+                <button id="cmScanActivityLogBtn" class="cm-btn-activity" title="Scan your previous comments from Facebook Activity Log">📜 Scan Activity Log</button>
+            </div>
             <div class="cm-scan-options">
                 <label class="cm-checkbox-label">
-                    <input type="checkbox" id="cmAutoExpand" checked> Auto-expand "View more comments"
+                    <input type="checkbox" id="cmAutoExpand" checked> Auto-expand hidden comments
                 </label>
             </div>
         </div>
@@ -66,12 +93,29 @@
             <button class="cm-filter-btn" id="cmFilterAll" data-filter="all">All Comments</button>
         </div>
 
-        <!-- Toolbar: search + sort + filter -->
+        <!-- Toolbar: search -->
         <div class="cm-toolbar">
-            <input type="search" id="cmSearch" class="cm-search" placeholder="Search comments…" autocomplete="off">
-            <select id="cmSort" class="cm-select" title="Sort order">
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
+            <input type="search" id="cmSearch" class="cm-search" placeholder="Search my comments or post captions…" autocomplete="off">
+        </div>
+
+        <!-- Secondary filters: source & date & sort -->
+        <div class="cm-filter-row">
+            <select id="cmSourceFilter" class="cm-select cm-select-source" title="Filter by Source">
+                <option value="all">All Sources</option>
+                <option value="manual">📌 Added from Page</option>
+                <option value="activity_log">📜 Activity Log</option>
+                <option value="current_feed">🌐 Current Feed</option>
+            </select>
+            <select id="cmDateFilter" class="cm-select cm-select-date" title="Filter by Date">
+                <option value="all">All Time</option>
+                <option value="7d">Past 7 Days</option>
+                <option value="30d">Past 30 Days</option>
+                <option value="90d">Past 3 Months</option>
+                <option value="1y">Past 1 Year</option>
+            </select>
+            <select id="cmSort" class="cm-select cm-select-sort" title="Sort order">
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
             </select>
         </div>
 
@@ -86,8 +130,21 @@
         <!-- Footer actions -->
         <div class="cm-footer">
             <button id="cmRefresh" class="cm-btn-sm">↻ Refresh</button>
-            <button id="cmClearAll" class="cm-btn-sm cm-btn-danger">Clear All</button>
+            <button id="cmClearAll" class="cm-btn-sm cm-btn-danger">Clear History</button>
             <span id="cmCount" class="cm-count"></span>
+        </div>
+
+        <!-- Confirmation Modal -->
+        <div id="cmModal" class="cm-modal" hidden style="display: none;">
+            <div id="cmModalBackdrop" class="cm-modal-backdrop"></div>
+            <div class="cm-modal-box">
+                <h4 id="cmModalTitle" class="cm-modal-title">Confirm Action</h4>
+                <div id="cmModalBody" class="cm-modal-body"></div>
+                <div class="cm-modal-actions">
+                    <button id="cmModalConfirmBtn" class="cm-modal-btn cm-modal-btn-primary">Confirm</button>
+                    <button id="cmModalCancelBtn" class="cm-modal-btn cm-modal-btn-cancel">Cancel</button>
+                </div>
+            </div>
         </div>
     </section>
 
