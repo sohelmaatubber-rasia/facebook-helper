@@ -32,9 +32,9 @@
     mod
   ));
 
-  // ../facebook-helper/facebook-helper-ts-v1/node_modules/jszip/dist/jszip.min.js
+  // node_modules/jszip/dist/jszip.min.js
   var require_jszip_min = __commonJS({
-    "../facebook-helper/facebook-helper-ts-v1/node_modules/jszip/dist/jszip.min.js"(exports, module) {
+    "node_modules/jszip/dist/jszip.min.js"(exports, module) {
       !(function(e) {
         if ("object" == typeof exports && "undefined" != typeof module) module.exports = e();
         else if ("function" == typeof define && define.amd) define([], e);

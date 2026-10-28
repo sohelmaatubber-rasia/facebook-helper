@@ -343,6 +343,9 @@
   }
   var COMMENTS_KEY = "fb_comments";
   var MAX_COMMENTS = 2500;
+  var COMMENTS_BACKUP_KEY = "fb_comments_backup_pre_part2";
+  var COMMENTS_SCHEMA_VERSION_KEY = "fb_comments_schema_version";
+  var COMMENTS_SCHEMA_VERSION = 2;
   function hashString(str) {
     let h1 = 3735928559, h2 = 1103515245;
     for (let i = 0; i < str.length; i++) {
@@ -472,7 +475,27 @@
       }
     }
     const incomingCast = incoming;
-    return {
+    const existingStatus = canonicalStatus(existing);
+    const incomingStatus = incoming.status ?? (incoming.replyStatus === "replied" ? "replied" : incoming.replyStatus === "unanswered" ? "pending" : void 0);
+    const mergedStatus = existingStatus === "replied" || incomingStatus === "replied" ? "replied" : existingStatus === "ignored" || incomingStatus === "ignored" ? "ignored" : incomingStatus || existingStatus;
+    const mergedHistory = [];
+    const historySeen = /* @__PURE__ */ new Set();
+    const pushHistory = (h) => {
+      if (!h || !h.text) return;
+      const key = `${h.text}|${h.timestamp || 0}`;
+      if (historySeen.has(key)) return;
+      historySeen.add(key);
+      mergedHistory.push(h);
+    };
+    (existing.replyHistory || []).forEach(pushHistory);
+    (incoming.replyHistory || []).forEach(pushHistory);
+    if (mergedHistory.length === 0 && incoming.lastReplyText) {
+      pushHistory({ text: incoming.lastReplyText, timestamp: incoming.repliedAt || existing.savedAt });
+    }
+    if (mergedHistory.length === 0 && existing.lastReplyText) {
+      pushHistory({ text: existing.lastReplyText, timestamp: existing.repliedAt || existing.savedAt });
+    }
+    const merged = {
       ...existing,
       text,
       postUrl,
@@ -488,7 +511,8 @@
       isMyComment: incoming.isMyComment !== void 0 ? incoming.isMyComment || Boolean(existing.isMyComment) : existing.isMyComment,
       source: incoming.source === "manual" ? "manual" : incoming.source === "activity_log" ? "activity_log" : existing.source || incoming.source || "current_feed",
       verificationStatus: incoming.verificationStatus || existing.verificationStatus || "verified",
-      replyStatus: existing.replyStatus === "replied" ? "replied" : incoming.replyStatus || existing.replyStatus || "unanswered",
+      status: mergedStatus,
+      replyHistory: mergedHistory.length > 0 ? mergedHistory : void 0,
       isReply: incoming.isReply !== void 0 ? incoming.isReply : existing.isReply,
       parentCommentId: existing.parentCommentId || incoming.parentCommentId,
       replies: mergedReplies.length > 0 ? mergedReplies : void 0,
@@ -496,6 +520,7 @@
       hasNewReplies: existing.hasNewReplies || incomingCast.hasNewReplies || false,
       lastCheckedRepliesAt: Math.max(existing.lastCheckedRepliesAt || 0, incomingCast.lastCheckedRepliesAt || 0) || void 0
     };
+    return stripLegacyStatusFields(merged);
   }
   function findExistingCommentIndex(existing, incoming, computedId) {
     const normIncomingText = cleanCommentText(incoming.text).toLowerCase();
@@ -624,7 +649,122 @@
     }
     return void 0;
   }
+  function canonicalStatus(c) {
+    if (c.status === "pending" || c.status === "replied" || c.status === "ignored") return c.status;
+    if (c.replyStatus === "replied") return "replied";
+    return "pending";
+  }
+  function stripLegacyStatusFields(c) {
+    const copy = { ...c };
+    delete copy.replyStatus;
+    delete copy.lastReplyText;
+    delete copy.repliedAt;
+    return copy;
+  }
+  function migrateCommentRecord(c) {
+    const status = canonicalStatus(c);
+    let replyHistory = Array.isArray(c.replyHistory) ? [...c.replyHistory] : [];
+    if (replyHistory.length === 0 && c.lastReplyText) {
+      replyHistory = [{ text: c.lastReplyText, timestamp: c.repliedAt || c.savedAt }];
+    }
+    const seen = /* @__PURE__ */ new Set();
+    replyHistory = replyHistory.filter((h) => {
+      if (!h || !h.text) return false;
+      const key = `${h.text}|${h.timestamp || 0}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const migrated = {
+      ...c,
+      status,
+      replyHistory: replyHistory.length > 0 ? replyHistory : void 0
+    };
+    return stripLegacyStatusFields(migrated);
+  }
+  function validateMigratedList(original, migrated) {
+    if (original.length !== migrated.length) {
+      return `count mismatch: original ${original.length}, migrated ${migrated.length}`;
+    }
+    for (let i = 0; i < original.length; i++) {
+      const o = original[i];
+      const m = migrated[i];
+      if (o.id !== m.id) return `id mismatch at index ${i}`;
+      if (o.text !== m.text || o.authorId !== m.authorId || o.postUrl !== m.postUrl || o.savedAt !== m.savedAt) {
+        return `content changed for comment ${o.id}`;
+      }
+      if (m.status !== "pending" && m.status !== "replied" && m.status !== "ignored") {
+        return `invalid status for comment ${o.id}`;
+      }
+      if (m.status === "ignored") return `comment ${o.id} was incorrectly marked ignored by migration`;
+      if (o.replyStatus === "replied" && m.status !== "replied") {
+        return `replied comment ${o.id} lost its replied status`;
+      }
+      if (o.lastReplyText && (!m.replyHistory || m.replyHistory.length === 0 || m.replyHistory[0].text !== o.lastReplyText)) {
+        return `reply history lost for comment ${o.id}`;
+      }
+      if (m.replyHistory) {
+        for (const h of m.replyHistory) {
+          if (!h.text || !h.timestamp) return `invalid reply history entry for comment ${o.id}`;
+        }
+      }
+    }
+    return null;
+  }
+  async function restoreCommentsFromBackup() {
+    const backup = await chrome.storage.local.get(COMMENTS_BACKUP_KEY);
+    const list = backup[COMMENTS_BACKUP_KEY];
+    if (!Array.isArray(list)) throw new Error("No Part 2 backup is available to restore from.");
+    await chrome.storage.local.set({ [COMMENTS_KEY]: list });
+    await chrome.storage.local.remove(COMMENTS_SCHEMA_VERSION_KEY);
+  }
+  async function migrateCommentsIfNeeded() {
+    const versionResult = await chrome.storage.local.get(COMMENTS_SCHEMA_VERSION_KEY);
+    if (versionResult[COMMENTS_SCHEMA_VERSION_KEY] >= COMMENTS_SCHEMA_VERSION) {
+      return { migrated: false, count: 0 };
+    }
+    const rawResult = await chrome.storage.local.get(COMMENTS_KEY);
+    const rawList = rawResult[COMMENTS_KEY] ?? [];
+    if (rawList.length === 0) {
+      await chrome.storage.local.set({ [COMMENTS_SCHEMA_VERSION_KEY]: COMMENTS_SCHEMA_VERSION });
+      return { migrated: false, count: 0 };
+    }
+    const alreadyMigrated = rawList.every(
+      (c) => (c.status === "pending" || c.status === "replied" || c.status === "ignored") && !c.replyStatus && !c.lastReplyText && !c.repliedAt
+    );
+    if (alreadyMigrated) {
+      await chrome.storage.local.set({ [COMMENTS_SCHEMA_VERSION_KEY]: COMMENTS_SCHEMA_VERSION });
+      return { migrated: false, count: 0 };
+    }
+    const existingBackup = await chrome.storage.local.get(COMMENTS_BACKUP_KEY);
+    if (!Array.isArray(existingBackup[COMMENTS_BACKUP_KEY])) {
+      await chrome.storage.local.set({ [COMMENTS_BACKUP_KEY]: rawList });
+    }
+    const backupCheck = await chrome.storage.local.get(COMMENTS_BACKUP_KEY);
+    const backupList = backupCheck[COMMENTS_BACKUP_KEY];
+    if (!Array.isArray(backupList) || backupList.length !== rawList.length || backupList.some((b, i) => b.id !== rawList[i].id)) {
+      throw new Error("Part 2 migration aborted: backup validation failed. Original comments were not changed.");
+    }
+    const migrated = rawList.map(migrateCommentRecord);
+    const validationError = validateMigratedList(rawList, migrated);
+    if (validationError) {
+      throw new Error(`Part 2 migration aborted: validation failed (${validationError}). Original comments were not changed.`);
+    }
+    await chrome.storage.local.set({
+      [COMMENTS_KEY]: migrated,
+      [COMMENTS_SCHEMA_VERSION_KEY]: COMMENTS_SCHEMA_VERSION
+    });
+    const afterResult = await chrome.storage.local.get(COMMENTS_KEY);
+    const afterList = afterResult[COMMENTS_KEY] ?? [];
+    const afterError = validateMigratedList(rawList, afterList);
+    if (afterError) {
+      await restoreCommentsFromBackup();
+      throw new Error(`Part 2 migration failed after write (${afterError}); original comments were restored from backup.`);
+    }
+    return { migrated: true, count: migrated.length };
+  }
   async function getComments() {
+    await migrateCommentsIfNeeded();
     const result = await chrome.storage.local.get(COMMENTS_KEY);
     const rawList = result[COMMENTS_KEY] ?? [];
     const cache = await getPostMetadataCache();
@@ -657,6 +797,10 @@
           delete sanitized.postCaption;
           changed = true;
         }
+      }
+      if (!sanitized.status) {
+        sanitized.status = canonicalStatus(sanitized);
+        changed = true;
       }
       const matchIdx = findExistingCommentIndex(deduped, sanitized, sanitized.id);
       if (matchIdx >= 0) {
@@ -711,7 +855,7 @@
       await chrome.storage.local.set({ [COMMENTS_KEY]: existing });
       return;
     }
-    const saved = {
+    const saved = stripLegacyStatusFields({
       ...comment,
       text: cleanText,
       id,
@@ -719,8 +863,9 @@
       timestamp: comment.timestamp || Date.now(),
       source: comment.source || "current_feed",
       verificationStatus: comment.verificationStatus || "verified",
-      replyStatus: comment.replyStatus || "unanswered"
-    };
+      status: comment.status ?? (comment.replyStatus === "replied" ? "replied" : "pending"),
+      replyHistory: comment.replyHistory || (comment.lastReplyText ? [{ text: comment.lastReplyText, timestamp: comment.repliedAt || Date.now() }] : void 0)
+    });
     const updated = [saved, ...existing].slice(0, MAX_COMMENTS);
     await chrome.storage.local.set({ [COMMENTS_KEY]: updated });
   }
@@ -740,7 +885,7 @@
       if (matchIdx >= 0) {
         existing[matchIdx] = mergeCommentRecords(existing[matchIdx], { ...c, text: cleanText });
       } else {
-        existing.unshift({
+        existing.unshift(stripLegacyStatusFields({
           ...c,
           text: cleanText,
           id,
@@ -748,8 +893,9 @@
           timestamp: c.timestamp || Date.now(),
           source: c.source || "current_feed",
           verificationStatus: c.verificationStatus || "verified",
-          replyStatus: c.replyStatus || "unanswered"
-        });
+          status: c.status ?? (c.replyStatus === "replied" ? "replied" : "pending"),
+          replyHistory: c.replyHistory || (c.lastReplyText ? [{ text: c.lastReplyText, timestamp: c.repliedAt || Date.now() }] : void 0)
+        }));
         addedCount++;
       }
     }
@@ -773,7 +919,7 @@
         existing[matchIdx] = mergeCommentRecords(existing[matchIdx], { ...c, text: cleanText });
         skippedCount++;
       } else {
-        existing.push({
+        existing.push(stripLegacyStatusFields({
           ...c,
           text: cleanText,
           id,
@@ -781,8 +927,9 @@
           timestamp: c.timestamp || Date.now(),
           source: c.source || "imported",
           verificationStatus: c.verificationStatus || "unverified",
-          replyStatus: c.replyStatus || "unanswered"
-        });
+          status: c.status ?? (c.replyStatus === "replied" ? "replied" : "pending"),
+          replyHistory: c.replyHistory || (c.lastReplyText ? [{ text: c.lastReplyText, timestamp: c.repliedAt || Date.now() }] : void 0)
+        }));
         importedCount++;
       }
     }
@@ -795,11 +942,25 @@
     const existing = await getComments();
     const target = existing.find((c) => c.id === id);
     if (target) {
-      target.replyStatus = "replied";
-      target.lastReplyText = replyText;
-      target.repliedAt = Date.now();
+      target.status = "replied";
+      const entry = { text: replyText, timestamp: Date.now() };
+      target.replyHistory = [...target.replyHistory || [], entry];
+      const cleaned = stripLegacyStatusFields(target);
+      existing[existing.indexOf(target)] = cleaned;
       await chrome.storage.local.set({ [COMMENTS_KEY]: existing });
     }
+  }
+  async function setCommentStatus(id, status) {
+    const existing = await getComments();
+    const target = existing.find((c) => c.id === id);
+    if (!target) throw new Error("Comment not found.");
+    const current = canonicalStatus(target);
+    if (current === "replied") {
+      throw new Error("A replied comment cannot be marked ignored or pending.");
+    }
+    if (current === status) return;
+    target.status = status;
+    await chrome.storage.local.set({ [COMMENTS_KEY]: existing });
   }
   async function saveCommentReplies(parentId, parentCommentId, postUrl, incomingReplies, parentCommentText) {
     if (!incomingReplies || incomingReplies.length === 0) return 0;
@@ -1202,6 +1363,8 @@
   }
   async function clearComments() {
     await chrome.storage.local.remove(COMMENTS_KEY);
+    await chrome.storage.local.remove(COMMENTS_BACKUP_KEY);
+    await chrome.storage.local.remove(COMMENTS_SCHEMA_VERSION_KEY);
   }
   chrome.runtime.onMessage.addListener(
     (message, _sender, sendResponse) => {
@@ -1355,6 +1518,9 @@
           return true;
         case "MARK_COMMENT_REPLIED":
           markCommentReplied(message.id, message.replyText).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "SET_COMMENT_STATUS":
+          setCommentStatus(message.id, message.status).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
           return true;
         case "SAVE_COMMENT_REPLIES":
           saveCommentReplies(

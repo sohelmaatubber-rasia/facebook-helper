@@ -16,6 +16,7 @@ import type {
   CheckRepliesResponse,
   CommentManagerMessage,
   CommentManagerResponse,
+  CommentStatus,
   ContentRequest,
   DetectedReply,
   DetectErrorCode,
@@ -718,6 +719,8 @@ const cmEl = {
   autoExpand: $<HTMLInputElement>("cmAutoExpand"),
   filterAll: $<HTMLButtonElement>("cmFilterAll"),
   filterMy: $<HTMLButtonElement>("cmFilterMy"),
+  filterPending: $<HTMLButtonElement>("cmFilterPending"),
+  filterReplied: $<HTMLButtonElement>("cmFilterReplied"),
   search: $<HTMLInputElement>("cmSearch"),
   sourceFilter: $<HTMLSelectElement>("cmSourceFilter"),
   dateFilter: $<HTMLSelectElement>("cmDateFilter"),
@@ -737,8 +740,27 @@ const cmEl = {
   modalCancel: $<HTMLButtonElement>("cmModalCancelBtn"),
 };
 
-/** Active filter: "all" comments or only "my" comments. Defaults to "my" (user's comments). */
-let currentFilter: "all" | "my" = "my";
+/** Active filter. Defaults to "my" (user's comments). Part 2 adds "pending" and "replied" status filters. */
+let currentFilter: "all" | "my" | "pending" | "replied" = "my";
+
+/** Part 2 status for a comment, including records that have not been migrated yet. */
+function getCommentStatus(comment: SavedComment): CommentStatus {
+  if (comment.status === "pending" || comment.status === "replied" || comment.status === "ignored") return comment.status;
+  if (comment.replyStatus === "replied") return "replied";
+  return "pending";
+}
+
+/** Last reply sent through the extension, from Part 2 history or legacy fields. */
+function getLastSentReply(comment: SavedComment): { text: string; timestamp: number } | null {
+  if (comment.replyHistory && comment.replyHistory.length > 0) {
+    const last = comment.replyHistory[comment.replyHistory.length - 1];
+    if (last && last.text) return { text: last.text, timestamp: last.timestamp };
+  }
+  if (comment.lastReplyText) {
+    return { text: comment.lastReplyText, timestamp: comment.repliedAt || 0 };
+  }
+  return null;
+}
 
 /** In-memory copy of comments for fast search/sort without re-fetching. */
 let allComments: SavedComment[] = [];
@@ -1208,16 +1230,17 @@ function getRecentReply(comment: SavedComment): { text: string; authorName: stri
     const candidateReplies = myReplies.length > 0 ? myReplies : comment.replies;
     const latestReply = candidateReplies[candidateReplies.length - 1];
 
+    const lastSent = getLastSentReply(comment);
     if (
-      comment.lastReplyText &&
-      comment.repliedAt &&
+      lastSent &&
+      lastSent.timestamp &&
       latestReply.detectedAt &&
-      comment.repliedAt > latestReply.detectedAt
+      lastSent.timestamp > latestReply.detectedAt
     ) {
       return {
-        text: comment.lastReplyText,
+        text: lastSent.text,
         authorName: comment.isMyComment ? comment.authorName : "You",
-        dateStr: formatDate(comment.repliedAt),
+        dateStr: formatDate(lastSent.timestamp),
       };
     }
 
@@ -1228,11 +1251,12 @@ function getRecentReply(comment: SavedComment): { text: string; authorName: stri
     };
   }
 
-  if (comment.lastReplyText) {
+  const lastSent = getLastSentReply(comment);
+  if (lastSent) {
     return {
-      text: comment.lastReplyText,
+      text: lastSent.text,
       authorName: comment.isMyComment ? comment.authorName : "You",
-      dateStr: comment.repliedAt ? formatDate(comment.repliedAt) : "Recently",
+      dateStr: lastSent.timestamp ? formatDate(lastSent.timestamp) : "Recently",
     };
   }
 
@@ -1294,7 +1318,8 @@ function renderRepliesContent(
   }
 
   if (!comment.replies || comment.replies.length === 0) {
-    if (comment.lastReplyText) {
+    const lastSent = getLastSentReply(comment);
+    if (lastSent) {
       return `
         ${successHeader}
         <div class="cm-replies-header">
@@ -1304,9 +1329,9 @@ function renderRepliesContent(
           <div class="cm-reply-card">
             <div class="cm-reply-header">
               <strong class="cm-reply-author">${escapeHtml(comment.authorName || "You")}</strong>
-              <span class="cm-reply-date">${comment.repliedAt ? formatDate(comment.repliedAt) : "Recently"}</span>
+              <span class="cm-reply-date">${lastSent.timestamp ? formatDate(lastSent.timestamp) : "Recently"}</span>
             </div>
-            <p class="cm-reply-text">${escapeHtml(comment.lastReplyText)}</p>
+            <p class="cm-reply-text">${escapeHtml(lastSent.text)}</p>
           </div>
         </div>
       `;
@@ -1400,9 +1425,13 @@ function renderComments(): void {
 
   let list = allComments;
 
-  // 1. Filter: My comments vs All
+  // 1. Filter: status / My comments vs All (Part 2)
   if (currentFilter === "my") {
     list = list.filter((c) => c.isMyComment !== false || c.source === "manual");
+  } else if (currentFilter === "pending") {
+    list = list.filter((c) => getCommentStatus(c) === "pending");
+  } else if (currentFilter === "replied") {
+    list = list.filter((c) => getCommentStatus(c) === "replied");
   }
 
   // 2. Filter: Provenance / Source
@@ -1541,7 +1570,9 @@ function renderComments(): void {
           <strong class="cm-comment-author">${escapeHtml(comment.authorName || "You")}</strong>
           ${comment.isReply ? `<span class="cm-badge-reply">Reply</span>` : ""}
           ${comment.isMyComment ? `<span class="cm-badge-my">You</span>` : ""}
-          ${comment.replyStatus === "replied" ? `<span class="cm-badge-replied">Replied</span>` : ""}
+          ${getCommentStatus(comment) === "replied" ? `<span class="cm-badge-replied">Replied</span>` : ""}
+          ${getCommentStatus(comment) === "pending" ? `<span class="cm-badge-pending">Needs Reply</span>` : ""}
+          ${getCommentStatus(comment) === "ignored" ? `<span class="cm-badge-ignored">Ignored</span>` : ""}
           ${
             comment.replies && comment.replies.length > 0
               ? `<span class="cm-badge-replies-count" title="${comment.replies.length} replies detected">💬 ${comment.replies.length} ${comment.replies.length === 1 ? "Reply" : "Replies"}</span>`
@@ -1564,6 +1595,8 @@ function renderComments(): void {
         <button class="cm-btn-reply" data-action="reply" data-id="${escapeHtml(comment.id)}" title="Reply to this comment">↩ Reply</button>
         <button class="cm-btn-view-replies ${isRepliesExpanded ? "cm-active" : ""}" data-action="toggle-replies" data-id="${escapeHtml(comment.id)}" title="${isRepliesExpanded ? "Hide replies" : "View recent reply to this comment"}">${isRepliesExpanded ? "▲ Hide Replies" : "💬 View Replies"}</button>
         <button class="cm-btn-check-replies" data-action="check-replies" data-id="${escapeHtml(comment.id)}" title="Check Facebook for all replies to this comment">🔄 Check Replies</button>
+        ${getCommentStatus(comment) === "pending" ? `<button class="cm-btn-ignore" data-action="ignore" data-id="${escapeHtml(comment.id)}" title="Mark this comment as ignored (manual only, does not affect Facebook)">⊘ Ignore</button>` : ""}
+        ${getCommentStatus(comment) === "ignored" ? `<button class="cm-btn-unignore" data-action="unignore" data-id="${escapeHtml(comment.id)}" title="Move this comment back to pending">↩ Unignore</button>` : ""}
         <button class="cm-btn-delete" data-action="delete" data-id="${escapeHtml(comment.id)}" title="Remove from extension saved history (does not delete from Facebook)">✕ Remove</button>
       </div>
 
@@ -1610,11 +1643,28 @@ function renderComments(): void {
   cmEl.list.appendChild(frag);
 }
 
-function setFilter(filter: "all" | "my"): void {
+function setFilter(filter: "all" | "my" | "pending" | "replied"): void {
   currentFilter = filter;
   cmEl.filterAll.classList.toggle("active", filter === "all");
   cmEl.filterMy.classList.toggle("active", filter === "my");
+  cmEl.filterPending.classList.toggle("active", filter === "pending");
+  cmEl.filterReplied.classList.toggle("active", filter === "replied");
   renderComments();
+}
+
+async function setCommentStatusAction(id: string, status: "pending" | "ignored"): Promise<void> {
+  try {
+    const res = await sendToBackgroundCM({ type: "SET_COMMENT_STATUS", id, status });
+    if (!res.ok) {
+      setCmStatus(`Status update failed: ${(res as { ok: false; error: string }).error}`);
+      return;
+    }
+    const comment = allComments.find((c) => c.id === id);
+    if (comment) comment.status = status;
+    renderComments();
+  } catch (err) {
+    setCmStatus(`Status update failed: ${String(err)}`);
+  }
 }
 
 /**
@@ -2282,6 +2332,10 @@ cmEl.list.addEventListener("click", (e) => {
 
   if (action === "delete") {
     void deleteOneComment(id);
+  } else if (action === "ignore") {
+    void setCommentStatusAction(id, "ignored");
+  } else if (action === "unignore") {
+    void setCommentStatusAction(id, "pending");
   } else if (action === "locate") {
     if (comment) void jumpToComment(comment);
   } else if (action === "toggle-replies") {
@@ -2335,6 +2389,8 @@ cmEl.clearAll.addEventListener("click", () => void clearAllComments());
 
 cmEl.filterAll.addEventListener("click", () => setFilter("all"));
 cmEl.filterMy.addEventListener("click", () => setFilter("my"));
+cmEl.filterPending.addEventListener("click", () => setFilter("pending"));
+cmEl.filterReplied.addEventListener("click", () => setFilter("replied"));
 
 cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
 cmEl.activityBtn.addEventListener("click", () => void scanActivityLogAction());

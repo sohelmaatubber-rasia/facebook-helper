@@ -65,19 +65,45 @@ This document outlines the architectural breakdown, milestones, and step-by-step
 
 ### **Part 2: Comment Status, Categorization & Threading**
 *Goal: Group comments by post and track reply status (Unanswered vs Answered).*
+*Status: `COMPLETED` (2026-10-28, Part 2 delivery; see notes below)*
 
-- [ ] **2.1: Storage Schema Upgrade (`types.ts` & `background.ts`):**
+- [x] **2.1: Storage Schema Upgrade (`types.ts` & `background.ts`):**
   - Store comments grouped by `postId` / `postUrl`.
   - Add metadata fields:
     - `status`: `"pending"` | `"replied"` | `"ignored"`
     - `replyHistory`: Array of sent replies with timestamps
     - `isAuthor`: Boolean flag (true if comment is by logged-in user)
-- [ ] **2.2: Reply Status Automation:**
+- [x] **2.2: Reply Status Automation:**
   - When a reply is successfully sent to a comment, automatically mark its status as `"replied"`.
   - Update `chrome.storage.local` and notify the UI in real time.
-- [ ] **2.3: Filter & Grouping in Popup:**
+- [x] **2.3: Filter & Grouping in Popup:**
   - Filter tabs in UI: **All**, **Unanswered / Pending**, **Replied**, **My Comments**.
   - Visual badge on unanswered comments needing attention.
+
+  **Part 2 delivery notes:**
+  - Status is `pending` | `replied` | `ignored` on `SavedComment.status`; legacy `replyStatus` / `lastReplyText` / `repliedAt` are migrated to `status` + `replyHistory` and then removed from stored records.
+  - `isAuthor` was NOT added as a second field: the existing `isMyComment` already records whether a comment is by the logged-in user, and duplicating it would create two flags to keep in sync.
+  - Grouping by post reuses the existing `postId` / `postUrl` fields; no grouped-section popup redesign was done, per the Part 2 scope decision.
+  - Migration is idempotent and validated: a pre-migration copy is saved under `fb_comments_backup_pre_part2`, the backup is validated, the migrated list is validated before and after writing, and the schema version is tracked under `fb_comments_schema_version` (value 2). On any backup/validation failure migration aborts before writing; on a post-write validation failure the backup is restored.
+  - `ignored` is manual-only: it is set only by the Ignore button in the popup and cleared only by Unignore. No code path sets it automatically, and a `replied` comment cannot be marked ignored.
+  - When a reply is sent, `markCommentReplied` sets `status` to `replied` and appends to `replyHistory`; the popup reloads the comment list after a successful reply (loadComments), so the new status is visible without a manual refresh.
+
+  **Part 2 files by sub-part:**
+  - 2.1: `src/types.ts` (CommentStatus, replyHistory, legacy-field notes), `src/background.ts` (migration, backup, validation, merge/save paths).
+  - 2.2: `src/background.ts` (`markCommentReplied`, `SET_COMMENT_STATUS` message handling); `src/popup.ts` reloads the list after a successful reply.
+  - 2.3: `src/popup.ts` (filters, badges, Ignore/Unignore, reply-history display), `static/popup.html` (two new filter buttons), `static/style.css` (pending/ignored badges, ignore buttons), plus rebuilt `dist/`.
+
+  **Part 2 test results (2026-10-28):**
+  - `npm run typecheck` - passed. `npm run check` (typecheck + build) - passed.
+  - Migration test on the actual extracted migration functions with sample records (unanswered, replied-with-legacy-reply, no-status, duplicate-history) - all passed, including idempotency and tamper/count-loss detection.
+  - Built `dist/` checked for `cmFilterPending`, `cmFilterReplied`, "Needs Reply", `SET_COMMENT_STATUS`, and the backup/schema-version keys - all present.
+  - No automated test suite exists in this repository, so no other tests were run.
+
+  **Part 2 limitations:**
+  - Version kept at 1.6.10; no version bump was made for Part 2.
+  - Live Facebook verification was not performed in this environment (see manual checks in CHANGELOG.md).
+  - A backup doubles the stored size of the comment list in the same storage area; if a list is close to the storage quota, migration aborts safely without changing the original list.
+  - Previous features were not changed in source: photo downloader and comment scanning files are untouched (see CHANGELOG.md regression notes).
 
 ---
 

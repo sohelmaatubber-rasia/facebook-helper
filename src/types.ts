@@ -162,7 +162,15 @@ export type ReplyResponse =
 
 export type CommentSource = "activity_log" | "imported" | "current_feed" | "manual";
 export type CommentVerificationStatus = "verified" | "unverified" | "inaccessible";
+/** Part 2 comment status. `ignored` is manual-only: no code path may set it automatically. */
+export type CommentStatus = "pending" | "replied" | "ignored";
+/** Legacy pre-Part 2 status, kept only so stored records can be migrated. New code must not write it. */
 export type CommentReplyStatus = "unanswered" | "replied";
+/** One sent reply in a comment's reply history. */
+export interface ReplyHistoryEntry {
+  text: string;
+  timestamp: number;
+}
 
 export interface ScannedPostComment {
   id: string;
@@ -345,7 +353,17 @@ export interface SavedComment {
   source?: CommentSource;
   /** Last verification status on Facebook. */
   verificationStatus?: CommentVerificationStatus;
-  /** Reply tracking status. */
+  /** Part 2 reply tracking status. Defaults to "pending" for records without a status. */
+  status?: CommentStatus;
+  /** History of replies sent through the extension, in send order. */
+  replyHistory?: ReplyHistoryEntry[];
+  /**
+   * Legacy pre-Part 2 fields. They are read only by the Part 2 migration and
+   * must not be written by new code. After migration they are removed from
+   * stored records; `status` and `replyHistory` are the canonical fields.
+   * `isMyComment` is retained as the author flag (Part 2 does not add a
+   * duplicate `isAuthor` field) — see the Part 2 plan in COMMENT_ROADMAP.md.
+   */
   replyStatus?: CommentReplyStatus;
   /** Reply text if replied through the extension. */
   lastReplyText?: string;
@@ -420,6 +438,7 @@ export type CommentManagerMessage =
   | { type: "SAVE_MULTIPLE_COMMENTS"; comments: Omit<SavedComment, "id" | "savedAt">[] }
   | { type: "IMPORT_COMMENTS"; comments: Omit<SavedComment, "id" | "savedAt">[] }
   | { type: "MARK_COMMENT_REPLIED"; id: string; replyText: string }
+  | { type: "SET_COMMENT_STATUS"; id: string; status: "pending" | "ignored" }
   | {
       type: "SAVE_COMMENT_REPLIES";
       parentId?: string;

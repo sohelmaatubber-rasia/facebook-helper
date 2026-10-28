@@ -883,6 +883,8 @@ ${job.failed || 0} failed`;
     autoExpand: $("cmAutoExpand"),
     filterAll: $("cmFilterAll"),
     filterMy: $("cmFilterMy"),
+    filterPending: $("cmFilterPending"),
+    filterReplied: $("cmFilterReplied"),
     search: $("cmSearch"),
     sourceFilter: $("cmSourceFilter"),
     dateFilter: $("cmDateFilter"),
@@ -901,6 +903,21 @@ ${job.failed || 0} failed`;
     modalCancel: $("cmModalCancelBtn")
   };
   var currentFilter = "my";
+  function getCommentStatus(comment) {
+    if (comment.status === "pending" || comment.status === "replied" || comment.status === "ignored") return comment.status;
+    if (comment.replyStatus === "replied") return "replied";
+    return "pending";
+  }
+  function getLastSentReply(comment) {
+    if (comment.replyHistory && comment.replyHistory.length > 0) {
+      const last = comment.replyHistory[comment.replyHistory.length - 1];
+      if (last && last.text) return { text: last.text, timestamp: last.timestamp };
+    }
+    if (comment.lastReplyText) {
+      return { text: comment.lastReplyText, timestamp: comment.repliedAt || 0 };
+    }
+    return null;
+  }
   var allComments = [];
   var expandedReplyCardIds = /* @__PURE__ */ new Set();
   var expandedReplyCardModes = /* @__PURE__ */ new Map();
@@ -1270,11 +1287,12 @@ ${job.failed || 0} failed`;
       });
       const candidateReplies = myReplies.length > 0 ? myReplies : comment.replies;
       const latestReply = candidateReplies[candidateReplies.length - 1];
-      if (comment.lastReplyText && comment.repliedAt && latestReply.detectedAt && comment.repliedAt > latestReply.detectedAt) {
+      const lastSent2 = getLastSentReply(comment);
+      if (lastSent2 && lastSent2.timestamp && latestReply.detectedAt && lastSent2.timestamp > latestReply.detectedAt) {
         return {
-          text: comment.lastReplyText,
+          text: lastSent2.text,
           authorName: comment.isMyComment ? comment.authorName : "You",
-          dateStr: formatDate(comment.repliedAt)
+          dateStr: formatDate(lastSent2.timestamp)
         };
       }
       return {
@@ -1283,11 +1301,12 @@ ${job.failed || 0} failed`;
         dateStr: latestReply.commentDate || (latestReply.detectedAt ? formatDate(latestReply.detectedAt) : "Recently")
       };
     }
-    if (comment.lastReplyText) {
+    const lastSent = getLastSentReply(comment);
+    if (lastSent) {
       return {
-        text: comment.lastReplyText,
+        text: lastSent.text,
         authorName: comment.isMyComment ? comment.authorName : "You",
-        dateStr: comment.repliedAt ? formatDate(comment.repliedAt) : "Recently"
+        dateStr: lastSent.timestamp ? formatDate(lastSent.timestamp) : "Recently"
       };
     }
     return null;
@@ -1323,7 +1342,8 @@ ${job.failed || 0} failed`;
     `;
     }
     if (!comment.replies || comment.replies.length === 0) {
-      if (comment.lastReplyText) {
+      const lastSent = getLastSentReply(comment);
+      if (lastSent) {
         return `
         ${successHeader}
         <div class="cm-replies-header">
@@ -1333,9 +1353,9 @@ ${job.failed || 0} failed`;
           <div class="cm-reply-card">
             <div class="cm-reply-header">
               <strong class="cm-reply-author">${escapeHtml2(comment.authorName || "You")}</strong>
-              <span class="cm-reply-date">${comment.repliedAt ? formatDate(comment.repliedAt) : "Recently"}</span>
+              <span class="cm-reply-date">${lastSent.timestamp ? formatDate(lastSent.timestamp) : "Recently"}</span>
             </div>
-            <p class="cm-reply-text">${escapeHtml2(comment.lastReplyText)}</p>
+            <p class="cm-reply-text">${escapeHtml2(lastSent.text)}</p>
           </div>
         </div>
       `;
@@ -1413,6 +1433,10 @@ ${job.failed || 0} failed`;
     let list = allComments;
     if (currentFilter === "my") {
       list = list.filter((c) => c.isMyComment !== false || c.source === "manual");
+    } else if (currentFilter === "pending") {
+      list = list.filter((c) => getCommentStatus(c) === "pending");
+    } else if (currentFilter === "replied") {
+      list = list.filter((c) => getCommentStatus(c) === "replied");
     }
     if (sourceFilter !== "all") {
       list = list.filter((c) => {
@@ -1513,7 +1537,9 @@ ${job.failed || 0} failed`;
           <strong class="cm-comment-author">${escapeHtml2(comment.authorName || "You")}</strong>
           ${comment.isReply ? `<span class="cm-badge-reply">Reply</span>` : ""}
           ${comment.isMyComment ? `<span class="cm-badge-my">You</span>` : ""}
-          ${comment.replyStatus === "replied" ? `<span class="cm-badge-replied">Replied</span>` : ""}
+          ${getCommentStatus(comment) === "replied" ? `<span class="cm-badge-replied">Replied</span>` : ""}
+          ${getCommentStatus(comment) === "pending" ? `<span class="cm-badge-pending">Needs Reply</span>` : ""}
+          ${getCommentStatus(comment) === "ignored" ? `<span class="cm-badge-ignored">Ignored</span>` : ""}
           ${comment.replies && comment.replies.length > 0 ? `<span class="cm-badge-replies-count" title="${comment.replies.length} replies detected">\u{1F4AC} ${comment.replies.length} ${comment.replies.length === 1 ? "Reply" : "Replies"}</span>` : ""}
           ${comment.hasNewReplies ? `<span class="cm-badge-new-reply" title="New replies detected">\u25CF New</span>` : ""}
         </div>
@@ -1532,6 +1558,8 @@ ${job.failed || 0} failed`;
         <button class="cm-btn-reply" data-action="reply" data-id="${escapeHtml2(comment.id)}" title="Reply to this comment">\u21A9 Reply</button>
         <button class="cm-btn-view-replies ${isRepliesExpanded ? "cm-active" : ""}" data-action="toggle-replies" data-id="${escapeHtml2(comment.id)}" title="${isRepliesExpanded ? "Hide replies" : "View recent reply to this comment"}">${isRepliesExpanded ? "\u25B2 Hide Replies" : "\u{1F4AC} View Replies"}</button>
         <button class="cm-btn-check-replies" data-action="check-replies" data-id="${escapeHtml2(comment.id)}" title="Check Facebook for all replies to this comment">\u{1F504} Check Replies</button>
+        ${getCommentStatus(comment) === "pending" ? `<button class="cm-btn-ignore" data-action="ignore" data-id="${escapeHtml2(comment.id)}" title="Mark this comment as ignored (manual only, does not affect Facebook)">\u2298 Ignore</button>` : ""}
+        ${getCommentStatus(comment) === "ignored" ? `<button class="cm-btn-unignore" data-action="unignore" data-id="${escapeHtml2(comment.id)}" title="Move this comment back to pending">\u21A9 Unignore</button>` : ""}
         <button class="cm-btn-delete" data-action="delete" data-id="${escapeHtml2(comment.id)}" title="Remove from extension saved history (does not delete from Facebook)">\u2715 Remove</button>
       </div>
 
@@ -1576,7 +1604,23 @@ ${job.failed || 0} failed`;
     currentFilter = filter;
     cmEl.filterAll.classList.toggle("active", filter === "all");
     cmEl.filterMy.classList.toggle("active", filter === "my");
+    cmEl.filterPending.classList.toggle("active", filter === "pending");
+    cmEl.filterReplied.classList.toggle("active", filter === "replied");
     renderComments();
+  }
+  async function setCommentStatusAction(id, status) {
+    try {
+      const res = await sendToBackgroundCM({ type: "SET_COMMENT_STATUS", id, status });
+      if (!res.ok) {
+        setCmStatus(`Status update failed: ${res.error}`);
+        return;
+      }
+      const comment = allComments.find((c) => c.id === id);
+      if (comment) comment.status = status;
+      renderComments();
+    } catch (err) {
+      setCmStatus(`Status update failed: ${String(err)}`);
+    }
   }
   async function scanPostCommentsAction() {
     setCmStatus("");
@@ -2076,6 +2120,10 @@ Your Reply:
     const comment = allComments.find((c) => c.id === id);
     if (action === "delete") {
       void deleteOneComment(id);
+    } else if (action === "ignore") {
+      void setCommentStatusAction(id, "ignored");
+    } else if (action === "unignore") {
+      void setCommentStatusAction(id, "pending");
     } else if (action === "locate") {
       if (comment) void jumpToComment(comment);
     } else if (action === "toggle-replies") {
@@ -2127,6 +2175,8 @@ Your Reply:
   cmEl.clearAll.addEventListener("click", () => void clearAllComments());
   cmEl.filterAll.addEventListener("click", () => setFilter("all"));
   cmEl.filterMy.addEventListener("click", () => setFilter("my"));
+  cmEl.filterPending.addEventListener("click", () => setFilter("pending"));
+  cmEl.filterReplied.addEventListener("click", () => setFilter("replied"));
   cmEl.scanBtn.addEventListener("click", () => void scanPostCommentsAction());
   cmEl.activityBtn.addEventListener("click", () => void scanActivityLogAction());
   cmEl.modal.hidden = true;

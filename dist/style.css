@@ -121,6 +121,18 @@ p { margin: 6px 0; }
     font-size: 9px; padding: 1px 4px; border-radius: 4px; font-weight: bold;
     background: #eafbe7; color: #1f7a1f; border: 1px solid #b8e6b3;
 }
+.cm-badge-pending {
+    font-size: 9px; padding: 1px 4px; border-radius: 4px; font-weight: bold;
+    background: #fff4e5; color: #8a5a00; border: 1px solid #f5c97a;
+}
+.cm-badge-ignored {
+    font-size: 9px; padding: 1px 4px; border-radius: 4px; font-weight: bold;
+    background: #f0f2f5; color: #65676b; border: 1px solid #d8dadf;
+}
+.cm-btn-ignore, .cm-btn-unignore {
+    font-size: 10px; padding: 3px 6px; background: #f0f2f5; color: #65676b;
+    border: 1px solid #ccd0d5; border-radius: 3px; cursor: pointer;
+}
 .cm-badge-reply {
     font-size: 9px; padding: 1px 4px; border-radius: 4px;
     background: #e4e6eb; color: #65676b; text-transform: uppercase; font-weight: bold;
