@@ -1,5 +1,95 @@
 # Changelog
 
+## LinkedIn Comment Assistant — in-app draft edit + manual-sent record (2026-10-29)
+
+Purpose: close the two workflow gaps found by a code audit of the LinkedIn
+feature in this same job (see below). No LinkedIn API, automation, or
+scraping was added; both changes are purely local.
+
+### Audit finding that drove this change
+
+- Implemented already: manual comment entry, rule matching, draft
+  generation, full draft preview in the draft card, Copy draft (+ "copied"
+  status), Delete comment/rule/template, Clear, and an "Open post on
+  LinkedIn" link (a user click, not automation).
+- NOT implemented in-app before this change: editing a draft inside the
+  extension (the only edit path was editing after copying, on LinkedIn
+  itself), and recording that the user already sent a draft themselves.
+  Draft status was only `"draft" | "copied"`, and no code path marked a
+  draft as sent. This job implements both, locally.
+
+### What changed
+
+- **`src/types.ts`**: `LinkedInDraft.status` gains `"sent_manually"`, defined
+  explicitly as a local record of the user's own action — `apiStatus` stays
+  `"not_sent"` always. New messages `UPDATE_LINKEDIN_DRAFT` and
+  `MARK_LINKEDIN_DRAFT_SENT_MANUALLY`.
+- **`src/linkedin-rules.ts`**: pure `applyDraftEdit` (rejects empty text,
+  never changes status/apiStatus, so editing a sent-manually draft does not
+  unsend or reset its record) and `markDraftSentManually` (sets status,
+  keeps `apiStatus: "not_sent"`).
+- **`src/background.ts`**: `updateLinkedInDraft` and
+  `markLinkedInDraftSentManually` handlers, storage-only like all other
+  LinkedIn handlers.
+- **`src/popup.ts`, `static/popup.html`**: draft cards now have Edit draft
+  (inline textarea + Save edit / Cancel), Copy draft, and "I sent this on
+  LinkedIn" (hidden once already marked). The card explains that sending
+  happens on LinkedIn, by the user, and the button only records it.
+- **Docs**: `LINKEDIN_COMMENT_ASSISTANT.md` workflow steps and
+  `COMMENT_ROADMAP.md` LinkedIn track updated for Edit + manual-sent.
+
+### Official-API re-verification in this job (not assumed)
+
+- Comments API (Microsoft Learn, official docs): Create/Edit/Delete
+  Comment exist via `POST socialActions/.../comments`, with
+  `w_organization_social_feed` (organisation page roles) and
+  `w_member_social_feed` (member); `r_member_social_feed` is restricted to
+  select developers only. Community Management API access itself requires a
+  developer app, verified organisation/business email, page super-admin
+  verification, and tier approval (Development tier: 500 calls/app and 100
+  calls/member per 24h; Standard tier: vetting + screencast; only registered
+  legal organisations for commercial use cases).
+- Messages API (Microsoft Learn, official docs): "restricted to approved
+  partners, subject to limitations via API agreement", and a message must be
+  tied to a specific member action (not an automated/scheduled event), the
+  member must opt in, a pre-prepared message must be shown as an editable
+  draft, and the member must take an affirmative action to send it.
+- User Agreement (LinkedIn's own page, effective 2025-11-03, s.8.2): item 2
+  prohibits software/browser plugins/add-ons to scrape or copy the Services;
+  item 13 prohibits bots/unauthorised automated methods to send messages or
+  create/comment/like/share posts; item 15 prohibits overlaying/modifying
+  the Services' appearance. These are the exact barriers for auto-reply,
+  auto-message, and DOM comment scanning by this extension today.
+- Conclusion per feature (see LINKEDIN_COMMENT_ASSISTANT.md for the table):
+  auto public reply via API = endpoint exists but gated (no app/approval/
+  OAuth for this extension); auto private message = endpoint exists but
+  approved-partner only; comment scanning via API = exists for organisation
+  pages with an approved app, restricted for personal member feeds, and via
+  browser/DOM = prohibited by User Agreement s.8.2. None of the three was
+  implemented by automation in this job.
+
+### Verification
+
+- `npm run typecheck` passed; `npm run build` (via `npm run check`) passed.
+- LinkedIn rule/draft tests passed in Node (esbuild bundle of
+  `src/linkedin-rules.ts`): old rule behaviour unchanged; draft edit
+  trims and saves, rejects empty text, keeps status/apiStatus; sent-manually
+  marking sets status while keeping `apiStatus: "not_sent"`; editing a
+  sent-manually draft keeps its sent record; full workflow simulation
+  (comment -> draft -> edit -> copied -> sent manually) passed.
+- Regression by byte comparison: Facebook `src/content.ts`,
+  `src/comment-scanner.ts`, `src/photo-picker.ts`, `src/photo-extractor.ts`,
+  `src/photo-clipboard.ts`, `src/offscreen.ts`, and `static/manifest.json`
+  are unchanged.
+- New code confirmed in `dist/`: `UPDATE_LINKEDIN_DRAFT`,
+  `MARK_LINKEDIN_DRAFT_SENT_MANUALLY`, `sent_manually`, and the Edit/Sent
+  buttons are present in `dist/background.js` / `dist/popup.js`.
+- **Not tested in Chrome UI:** popup clicks (Edit/Save/Copy/I-sent) were
+  verified at logic + build level only, not by clicking through the real
+  Chrome popup, and no live LinkedIn comment was sent. Do not report the
+  popup workflow as Chrome-verified until that manual test is done.
+
+
 ## LinkedIn Comment Assistant — manual drafts only (2026-10-29)
 
 Purpose: add the LinkedIn Comment Assistant requested 2026-10-29 (Personal

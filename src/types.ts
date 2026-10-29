@@ -326,8 +326,13 @@ export interface LinkedInDraft {
   kind: "public_reply" | "private_message";
   text: string;
   createdAt: number;
-  /** "draft" until the user copies it, then "copied". Never "sent" by us. */
-  status: "draft" | "copied";
+  /**
+   * "draft" until the user copies it, then "copied". "sent_manually" means
+   * the USER told the extension they already sent this text themselves on
+   * LinkedIn — it is a local record of the user's own action, never a claim
+   * that the extension sent anything. `apiStatus` stays "not_sent" always.
+   */
+  status: "draft" | "copied" | "sent_manually";
   apiStatus: "not_sent";
 }
 
@@ -340,7 +345,9 @@ export type LinkedInManagerMessage =
   | { type: "SAVE_LINKEDIN_RULES"; rules: LinkedInRule[] }
   | { type: "SAVE_LINKEDIN_TEMPLATES"; templates: LinkedInTemplate[] }
   | { type: "GENERATE_LINKEDIN_DRAFT"; commentId: string }
-  | { type: "MARK_LINKEDIN_DRAFT_COPIED"; draftId: string };
+  | { type: "MARK_LINKEDIN_DRAFT_COPIED"; draftId: string }
+  | { type: "UPDATE_LINKEDIN_DRAFT"; draftId: string; text: string }
+  | { type: "MARK_LINKEDIN_DRAFT_SENT_MANUALLY"; draftId: string };
 
 /** Shape the background returns for GET_LINKEDIN_DATA (via sendResponse). */
 export interface LinkedInData {

@@ -85,6 +85,36 @@ export function generateLinkedInDraft(
   };
 }
 
+/** Validate edited draft text; returns an error string or null. */
+export function validateDraftText(text: string): string | null {
+  if (!text.trim()) return "Draft text cannot be empty.";
+  return null;
+}
+
+/**
+ * Pure draft edit: returns the updated draft, or an error string.
+ * Editing never changes `status` or `apiStatus` — in particular, editing a
+ * draft the user already marked as sent manually does not unsend anything
+ * (the extension never sent it) and does not reset that record.
+ */
+export function applyDraftEdit(
+  draft: LinkedInDraft,
+  newText: string,
+): { draft: LinkedInDraft } | { error: string } {
+  const error = validateDraftText(newText);
+  if (error) return { error };
+  return { draft: { ...draft, text: newText.trim() } };
+}
+
+/**
+ * Pure manual-sent marking: records that the USER sent this text themselves
+ * on LinkedIn. `apiStatus` deliberately stays "not_sent" — this is a local
+ * record of the user's own action, not a claim that the extension sent it.
+ */
+export function markDraftSentManually(draft: LinkedInDraft): LinkedInDraft {
+  return { ...draft, status: "sent_manually", apiStatus: "not_sent" };
+}
+
 /** Validate a rule before it is saved; returns an error string or null. */
 export function validateLinkedInRule(rule: LinkedInRule): string | null {
   if (!rule.name.trim()) return "Rule name is required.";

@@ -2510,6 +2510,12 @@ Note: ${result.failureSummary}`;
   function liEscape(text) {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+  var liEditingDrafts = /* @__PURE__ */ new Set();
+  function liDraftBadge(d) {
+    if (d.status === "sent_manually") return "Sent by you on LinkedIn";
+    if (d.status === "copied") return "Copied";
+    return "Draft \u2014 not sent";
+  }
   function renderLinkedIn() {
     const filter = liEl.filterKind.value;
     const comments = liData.comments.filter((c) => filter === "all" || c.accountKind === filter);
@@ -2524,14 +2530,24 @@ Note: ${result.failureSummary}`;
             </div>
           </div>`
     ).join("") : "<p>No LinkedIn comments yet. Add one manually above.</p>";
-    liEl.draftList.innerHTML = liData.drafts.length ? liData.drafts.map(
-      (d) => `<div class="li-card">
+    liEl.draftList.innerHTML = liData.drafts.length ? liData.drafts.map((d) => {
+      const editing = liEditingDrafts.has(d.id);
+      return `<div class="li-card">
             <div><span class="li-badge">${d.kind === "public_reply" ? "Public reply draft" : "Private message draft"}</span>
-            <span class="li-badge">${d.status === "copied" ? "Copied" : "Draft \u2014 not sent"}</span></div>
-            <p>${liEscape(d.text)}</p>
-            <button data-li-copy="${d.id}">Copy draft</button>
-          </div>`
-    ).join("") : "<p>No drafts yet. Add a comment, then Generate draft.</p>";
+            <span class="li-badge">${liDraftBadge(d)}</span></div>
+            ${editing ? `<textarea data-li-edit-text="${d.id}" rows="3">${liEscape(d.text)}</textarea>
+                   <div class="li-actions">
+                     <button data-li-edit-save="${d.id}">Save edit</button>
+                     <button data-li-edit-cancel="${d.id}">Cancel</button>
+                   </div>` : `<p>${liEscape(d.text)}</p>
+                   <div class="li-actions">
+                     <button data-li-copy="${d.id}">Copy draft</button>
+                     <button data-li-edit="${d.id}">Edit draft</button>
+                     ${d.status === "sent_manually" ? "" : `<button data-li-sent="${d.id}">I sent this on LinkedIn</button>`}
+                   </div>
+                   <p class="li-hint">Sending happens on LinkedIn, by you. This button only records that you already sent it yourself.</p>`}
+          </div>`;
+    }).join("") : "<p>No drafts yet. Add a comment, then Generate draft.</p>";
     liEl.ruleList.innerHTML = liData.rules.length ? liData.rules.map(
       (r) => `<div class="li-card">
             <div><strong>${liEscape(r.name)}</strong> <span class="li-badge">${r.action}</span>
@@ -2572,6 +2588,38 @@ Note: ${result.failureSummary}`;
         if (!draft) return;
         await navigator.clipboard.writeText(draft.text);
         await liSend({ type: "MARK_LINKEDIN_DRAFT_COPIED", draftId: draft.id });
+        await loadLinkedIn();
+      });
+    });
+    liEl.draftList.querySelectorAll("[data-li-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        liEditingDrafts.add(btn.dataset.liEdit);
+        renderLinkedIn();
+      });
+    });
+    liEl.draftList.querySelectorAll("[data-li-edit-cancel]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        liEditingDrafts.delete(btn.dataset.liEditCancel);
+        renderLinkedIn();
+      });
+    });
+    liEl.draftList.querySelectorAll("[data-li-edit-save]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.liEditSave;
+        const textarea = liEl.draftList.querySelector(`[data-li-edit-text="${id}"]`);
+        if (!textarea) return;
+        const res = await liSend({ type: "UPDATE_LINKEDIN_DRAFT", draftId: id, text: textarea.value });
+        if (!res.ok) {
+          liShowError(liEl.addError, res.error ?? "Could not save the edited draft.");
+          return;
+        }
+        liEditingDrafts.delete(id);
+        await loadLinkedIn();
+      });
+    });
+    liEl.draftList.querySelectorAll("[data-li-sent]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await liSend({ type: "MARK_LINKEDIN_DRAFT_SENT_MANUALLY", draftId: btn.dataset.liSent });
         await loadLinkedIn();
       });
     });

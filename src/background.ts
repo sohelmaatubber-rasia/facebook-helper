@@ -41,9 +41,11 @@ import type {
 } from "./types";
 import { isUnwantedEmojiOrUiUrl } from "./photo-extractor";
 import {
+  applyDraftEdit,
   defaultLinkedInRules,
   defaultLinkedInTemplates,
   generateLinkedInDraft,
+  markDraftSentManually,
   validateLinkedInComment,
   validateLinkedInRule,
 } from "./linkedin-rules";
@@ -1110,6 +1112,24 @@ async function markLinkedInDraftCopied(draftId: string): Promise<void> {
   });
 }
 
+async function updateLinkedInDraft(draftId: string, text: string): Promise<void> {
+  const data = await getLinkedInData();
+  const draft = data.drafts.find((d) => d.id === draftId);
+  if (!draft) throw new Error("LinkedIn draft not found.");
+  const result = applyDraftEdit(draft, text);
+  if ("error" in result) throw new Error(result.error);
+  await chrome.storage.local.set({
+    [LI_DRAFTS_KEY]: data.drafts.map((d) => (d.id === draftId ? result.draft : d)),
+  });
+}
+
+async function markLinkedInDraftSentManually(draftId: string): Promise<void> {
+  const data = await getLinkedInData();
+  await chrome.storage.local.set({
+    [LI_DRAFTS_KEY]: data.drafts.map((d) => (d.id === draftId ? markDraftSentManually(d) : d)),
+  });
+}
+
 async function getComments(): Promise<SavedComment[]> {
   // Part 2 migration runs before any comment read/write path, so every caller
   // (save, mark replied, popup, scanner cache) sees the migrated schema.
@@ -2098,6 +2118,18 @@ chrome.runtime.onMessage.addListener(
 
       case "MARK_LINKEDIN_DRAFT_COPIED":
         markLinkedInDraftCopied(message.draftId)
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "UPDATE_LINKEDIN_DRAFT":
+        updateLinkedInDraft(message.draftId, message.text)
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "MARK_LINKEDIN_DRAFT_SENT_MANUALLY":
+        markLinkedInDraftSentManually(message.draftId)
           .then(() => sendResponse({ ok: true }))
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true;

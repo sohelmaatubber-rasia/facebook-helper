@@ -43,9 +43,14 @@ in the next section.
 5. Press **Generate draft** on a comment: the local rule engine picks the
    winning rule and creates a draft (or marks the comment Ignored when the
    winning rule's action is Ignore, or reports "no rule matched").
-6. Press **Copy draft**, edit the text, and post/send it **yourself** on
-   LinkedIn. A draft's status becomes "Copied"; it is never "Sent" by this
-   extension, and its `apiStatus` is always `"not_sent"`.
+6. Press **Copy draft**, or press **Edit draft** to edit the text inside
+   the extension first (Save edit / Cancel; empty text is rejected, and
+   editing never changes a draft's status or `apiStatus`). Then post/send
+   the text **yourself** on LinkedIn. A draft's status becomes "Copied"
+   after copying. If you already sent it yourself, press **"I sent this on
+   LinkedIn"**: the draft is marked `"sent_manually"` — a local record of
+   your own action only. It is never "Sent" by this extension, and its
+   `apiStatus` is always `"not_sent"`.
 
 ## What is implemented, file by file
 
@@ -199,5 +204,9 @@ any API work, because LinkedIn changes these gates.
 - **No LinkedIn account connection**: there is no OAuth, no token, and no
   way to verify that a "Company page" comment actually belongs to a page the
   user administers. The account-type field is the user's own label.
+- **Chrome popup clicks not yet tested**: Edit/Save/Copy/"I sent this"
+  buttons were verified at logic + build level (unit tests, dist presence),
+  not by clicking through the real Chrome popup. Live LinkedIn sending is
+  also still pending (see above).
 - **Drafts are plain text**: no @-mentions, attachments, or formatting are
   generated; the user adds those when editing on LinkedIn.

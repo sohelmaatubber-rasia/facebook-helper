@@ -73,6 +73,18 @@
       newStatus: "drafted"
     };
   }
+  function validateDraftText(text) {
+    if (!text.trim()) return "Draft text cannot be empty.";
+    return null;
+  }
+  function applyDraftEdit(draft, newText) {
+    const error = validateDraftText(newText);
+    if (error) return { error };
+    return { draft: { ...draft, text: newText.trim() } };
+  }
+  function markDraftSentManually(draft) {
+    return { ...draft, status: "sent_manually", apiStatus: "not_sent" };
+  }
   function validateLinkedInRule(rule) {
     if (!rule.name.trim()) return "Rule name is required.";
     if (rule.keywords.filter((k) => k.trim()).length === 0) return "At least one keyword is required.";
@@ -935,6 +947,22 @@
       [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? { ...d, status: "copied" } : d)
     });
   }
+  async function updateLinkedInDraft(draftId, text) {
+    const data = await getLinkedInData();
+    const draft = data.drafts.find((d) => d.id === draftId);
+    if (!draft) throw new Error("LinkedIn draft not found.");
+    const result = applyDraftEdit(draft, text);
+    if ("error" in result) throw new Error(result.error);
+    await chrome.storage.local.set({
+      [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? result.draft : d)
+    });
+  }
+  async function markLinkedInDraftSentManually(draftId) {
+    const data = await getLinkedInData();
+    await chrome.storage.local.set({
+      [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? markDraftSentManually(d) : d)
+    });
+  }
   async function getComments() {
     await migrateCommentsIfNeeded();
     const result = await chrome.storage.local.get(COMMENTS_KEY);
@@ -1743,6 +1771,12 @@
           return true;
         case "MARK_LINKEDIN_DRAFT_COPIED":
           markLinkedInDraftCopied(message.draftId).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "UPDATE_LINKEDIN_DRAFT":
+          updateLinkedInDraft(message.draftId, message.text).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "MARK_LINKEDIN_DRAFT_SENT_MANUALLY":
+          markLinkedInDraftSentManually(message.draftId).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
           return true;
       }
       return void 0;
