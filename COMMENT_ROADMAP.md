@@ -159,3 +159,17 @@ We execute this roadmap sequentially, one part at a time:
 5. **Implement Part 5:** Multi-layout testing and cross-language verification.
 
 *Every completed part is built, tested locally (`npm run check`), and pushed to GitHub.*
+
+---
+
+## 🔗 LinkedIn Comment Assistant — Separate Track (not a Facebook Part 1–5 item)
+
+Status (2026-10-29): **implemented as a local manual-draft feature and pushed to GitHub main** (see `LINKEDIN_COMMENT_ASSISTANT.md` for the full record). This track is separate from the Facebook comment roadmap above: it does not use the Facebook comment scanner, and no Facebook Part is changed by it.
+
+- [x] **LinkedIn tab in the popup:** manual comment entry (Personal profile / Company page), comment list, draft list, rule list/form, template list/form.
+- [x] **User-configured rules:** keyword matching, account scope (Personal / Company / Both), action (Public reply draft / Private message draft / Ignore), template, priority. Empty keywords never match; disabled rules never match.
+- [x] **Local rule engine (`src/linkedin-rules.ts`):** pure logic, no LinkedIn API, fetch, DOM, or chrome call; unit-tested in Node.
+- [x] **Separate local storage:** `li_comments`, `li_rules`, `li_templates`, `li_drafts` in `chrome.storage.local` (max 1,000 comments), never touching `fb_comments`.
+- [x] **Safety boundary:** no linkedin.com host permission, no LinkedIn content script, no API token, no scraping, no browser automation. Drafts are copied, edited, and sent by the user on LinkedIn; `LinkedInDraft.apiStatus` is always `"not_sent"`.
+- [ ] **Blocked (not implemented, by policy/API access):** automatic public replies via the official API (needs an approved Community Management API app + administrator/member OAuth); automatic private inbox messages (Messages API is approved-partner only); LinkedIn comment scanning/scraping and browser automation (prohibited by LinkedIn User Agreement s.8.2).
+- [ ] **Pending (not done in this environment):** live LinkedIn testing — paste a real LinkedIn comment, generate a draft, and manually send it through this UI. Do not report the LinkedIn feature as live-verified until that is done.

@@ -86,11 +86,12 @@ browser automation or any policy-violating method.
   sent through this UI yet. Do not report the LinkedIn feature as
   live-verified until that is done.
 
-### Delivery status (updated after the push in this same job)
+### Delivery status
 
-- ZIP: created and verified (see the job's final report).
-- Local commit: created in the working git clone (see the job's final report).
-- GitHub push: see the job's final report for the verified remote commit.
+- ZIP: created and verified — `facebook-helper-v1.6.10-linkedin.zip` (42 entries, `unzip -t` clean).
+- Local commit: `9fa06cd` in `~/workspace/facebook-helper-git` ("feat(linkedin): add LinkedIn Comment Assistant with local manual drafts", on top of `bb76a5a`).
+- GitHub push: **completed 2026-10-29** — remote `main` HEAD is now `0ddeb6defcbddeaa025c7b2c0ae99c8f52e87f6e` ("feat(linkedin): add LinkedIn Comment Assistant with local manual drafts"), directly on top of `c625b711` (Part 2). All 16 pushed files were verified by remote blob SHA against the local files (16/16 match). The first push attempt had timed out on its approval card (no decision, not a denial or 403); the retry on 2026-10-29 was approved promptly and succeeded. No force push or history rewrite was used.
+- Note: this CHANGELOG update itself (delivery-status record + the LinkedIn section added to `COMMENT_ROADMAP.md` in the same follow-up job) is delivered as a separate, later commit; see that job's final report for its remote SHA.
 
 
 ## Baseline sync — v1.6.10 (2026-10-28)
