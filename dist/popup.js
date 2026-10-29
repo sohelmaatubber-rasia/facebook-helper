@@ -1525,8 +1525,7 @@ ${job.failed || 0} failed`;
         <img class="cm-post-thumb"
              src="${escapeHtml2(initialThumb)}"
              alt="Post thumbnail"
-             loading="lazy"
-             onerror="this.onerror=null;this.src='${NEUTRAL_POST_PLACEHOLDER}'">
+             loading="lazy">
         <div class="cm-post-info">
           <div class="cm-post-author-row">
             <span class="cm-post-author-label">Post by:</span>

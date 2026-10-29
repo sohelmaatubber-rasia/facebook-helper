@@ -1,5 +1,79 @@
 # Changelog
 
+## CSP fix — inline onerror handler removed from Comment Manager cards (2026-10-29)
+
+### Reported error (reproduced exactly, not assumed)
+
+- `Executing inline event handler violates the following Content Security
+  Policy directive 'script-src 'self' 'wasm-unsafe-eval'
+  'inline-speculation-rules' ...` — this is Chrome's Manifest V3 default
+  extension-page CSP. It is NOT a Facebook-page CSP error and NOT a
+  manifest setting error: the manifest deliberately sets no custom CSP,
+  so the MV3 default applies.
+
+### Root cause — exactly one inline handler in the whole codebase
+
+- `src/popup.ts`, `renderComments()` (Comment Manager saved-comment cards):
+  the post-thumbnail `<img>` was rendered via `card.innerHTML` with
+  `onerror="this.onerror=null;this.src='<placeholder>'"`. A full search of
+  `src/`, `static/` and `dist/` for inline `on*` attributes (onclick,
+  onchange, onsubmit, onload, onerror, ...) found this as the ONLY content
+  attribute handler. All other buttons use `data-action` + event delegation
+  or `addEventListener`, and all other `.onerror =` / `.onload =` lines
+  are JS property assignments, which CSP allows.
+- Triggering UI action: opening the Comments tab (or any re-render) while
+  a saved comment's post thumbnail fails to load (expired/broken fbcdn
+  URL). Chrome compiles the inline handler when the attribute is set
+  during `innerHTML` parsing, so the violation is logged at render time —
+  which is why the error appears only for comments with broken thumbnails,
+  not on every popup open.
+- Reproduction (headless Chrome, `dist/` as unpacked extension, one seeded
+  saved comment with `postThumbnailUrl: https://example.invalid/
+  broken-thumb.jpg`): **before the fix, 4 CSP violations captured**, one
+  with the exact reported directive, card rendered, thumbnail element
+  carrying the `onerror` attribute.
+
+### Fix (minimal — one attribute removed, no new handler needed)
+
+- Before:
+  `<img class="cm-post-thumb" src="..." alt="Post thumbnail"
+  loading="lazy" onerror="this.onerror=null;this.src='...'">`
+- After:
+  `<img class="cm-post-thumb" src="..." alt="Post thumbnail"
+  loading="lazy">`
+- No new handler was added because the correct CSP-safe handler already
+  existed directly below in the same function ("Cascading fallback on
+  image error"): after `card.innerHTML`, the code queries `.cm-post-thumb`
+  and assigns `imgEl.onerror = () => { if (src !== placeholder) src =
+  placeholder; }` as a JS property. That handler keeps working and now
+  solely owns the fallback, so broken thumbnails still become the neutral
+  placeholder — verified in the post-fix run (thumbnail src ends as the
+  placeholder SVG data URI).
+- Nothing else changed: no manifest CSP change (weakening CSP with
+  'unsafe-inline' would have been the wrong fix), no button/comment/
+  reply/filter/ignore/photo/LinkedIn logic touched.
+
+### Verification (all actually run)
+
+- Post-fix reproduction with the same seeded broken thumbnail: **0 CSP
+  violations**, card renders, no `onerror` attribute, placeholder fallback
+  works, no page errors.
+- Post-fix full scan: no inline `on*` attributes remain in `src/`,
+  `static/` or `dist/` (attribute scan of `dist/` empty; remaining
+  `.onerror =` lines are property assignments, not inline handlers).
+- `npm run typecheck` + `npm run build` (`npm run check`) passed.
+- Real Chrome UI test (LinkedIn workflow): **12/12 PASS** again after
+  this change (comment add, draft preview, Edit→Save/Cancel, empty-save
+  rejection, Copy→Copied, I-sent→sent, comment drafted→sent, reopen
+  persistence, edit-after-sent, Delete, Clear).
+- Facebook regression by byte comparison: `src/content.ts`,
+  `src/comment-scanner.ts`, `src/photo-picker.ts`, `src/photo-extractor.ts`,
+  `src/photo-clipboard.ts`, `src/offscreen.ts`, `static/manifest.json`
+  unchanged. LinkedIn rule smoke test passed.
+- **Still pending (not claimed):** a manual check in Brooklyn's desktop
+  Chrome with their real saved comments, and live Facebook testing.
+
+
 ## LinkedIn verification & completion (2026-10-29)
 
 ### Critical bug found by the first real Chrome UI test — and fixed
