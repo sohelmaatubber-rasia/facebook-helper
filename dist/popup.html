@@ -13,6 +13,7 @@
     <div class="tab-bar">
         <button class="tab-btn active" id="tabPhotos">📷 Photos</button>
         <button class="tab-btn" id="tabComments">💬 Comments</button>
+        <button class="tab-btn" id="tabLinkedIn">🔗 LinkedIn</button>
     </div>
 
     <!-- ==================== Photo Downloader Tab ==================== -->
@@ -151,5 +152,78 @@
     </section>
 
     <script src="popup.js"></script>
+
+    <!-- ==================== LinkedIn Comment Assistant Tab ==================== -->
+    <!-- LOCAL MANUAL-ASSIST ONLY: no LinkedIn scanning, posting, or messaging.
+         Drafts are generated locally from comments the user pastes in, and the
+         user copies, edits, and sends them themselves on LinkedIn. -->
+    <section id="sectionLinkedIn" hidden>
+        <div class="li-notice">
+            <strong>LinkedIn Comment Assistant — manual drafts only.</strong>
+            <p>This tab does not read LinkedIn, post replies, or send messages automatically.
+            Paste a comment you saw on LinkedIn, generate a draft from your rules, then copy it,
+            edit it, and send it yourself on LinkedIn. Auto-posting and auto-messaging are
+            deliberately not built in (see LINKEDIN_COMMENT_ASSISTANT.md).</p>
+        </div>
+
+        <h3>Add a LinkedIn comment (manual)</h3>
+        <label>Account type
+            <select id="liAccountKind">
+                <option value="personal">Personal profile</option>
+                <option value="company">Company page</option>
+            </select>
+        </label>
+        <label>Commenter name <input id="liAuthor" type="text" placeholder="e.g. Jane Doe"></label>
+        <label>Post link (optional, linkedin.com only) <input id="liPostUrl" type="text" placeholder="https://www.linkedin.com/posts/..."></label>
+        <label>Comment text <textarea id="liText" rows="3" placeholder="Paste the LinkedIn comment text here"></textarea></label>
+        <button id="liAddBtn">Add comment</button>
+        <p id="liAddError" class="warning" hidden></p>
+
+        <h3>Comments</h3>
+        <label>Show
+            <select id="liFilterKind">
+                <option value="all">All accounts</option>
+                <option value="personal">Personal only</option>
+                <option value="company">Company only</option>
+            </select>
+        </label>
+        <div id="liCommentList"></div>
+        <button id="liClearBtn">Clear LinkedIn comments &amp; drafts</button>
+
+        <h3>Drafts (copy &amp; send yourself on LinkedIn)</h3>
+        <div id="liDraftList"></div>
+
+        <h3>Rules (keyword -&gt; draft action)</h3>
+        <p class="li-hint">Rules only match comments you add manually. Empty keywords never match.
+        Higher priority wins. “Private message draft” only creates a draft text — it does not send a message.</p>
+        <div id="liRuleList"></div>
+        <label>Rule name <input id="liRuleName" type="text"></label>
+        <label>Keywords (comma separated) <input id="liRuleKeywords" type="text" placeholder="price, pricing, cost"></label>
+        <label>Account
+            <select id="liRuleKind">
+                <option value="both">Both</option>
+                <option value="personal">Personal</option>
+                <option value="company">Company</option>
+            </select>
+        </label>
+        <label>Action
+            <select id="liRuleAction">
+                <option value="public_reply_draft">Public reply draft</option>
+                <option value="private_message_draft">Private message draft</option>
+                <option value="ignore">Ignore</option>
+            </select>
+        </label>
+        <label>Template <select id="liRuleTemplate"></select></label>
+        <label>Priority <input id="liRulePriority" type="number" value="10"></label>
+        <button id="liAddRuleBtn">Add rule</button>
+        <p id="liRuleError" class="warning" hidden></p>
+
+        <h3>Templates ({{author}} is replaced with the commenter name)</h3>
+        <div id="liTemplateList"></div>
+        <label>Template name <input id="liTplName" type="text"></label>
+        <label>Template text <textarea id="liTplBody" rows="2"></textarea></label>
+        <button id="liAddTplBtn">Add template</button>
+        <p id="liTplError" class="warning" hidden></p>
+    </section>
 </body>
 </html>

@@ -798,3 +798,12 @@ p { margin: 6px 0; }
 }
 
 
+
+/* LinkedIn Comment Assistant tab (manual drafts only) */
+.li-notice { background: #fff8e1; border: 1px solid #e6c87a; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+.li-notice p { margin: 6px 0 0; }
+.li-card { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+.li-card p { margin: 6px 0; white-space: pre-wrap; }
+.li-badge { display: inline-block; background: #eef3fb; color: #1877f2; border-radius: 10px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
+.li-actions button, .li-card button { margin-right: 6px; margin-top: 4px; }
+.li-hint { color: #555; font-size: 13px; }

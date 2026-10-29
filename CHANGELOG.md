@@ -1,5 +1,98 @@
 # Changelog
 
+## LinkedIn Comment Assistant — manual drafts only (2026-10-29)
+
+Purpose: add the LinkedIn Comment Assistant requested 2026-10-29 (Personal
+profile + Company page support; user-configured rules producing a public
+reply or a private message from a post's comments), without breaking the
+Facebook Photo Downloader or Comment Manager, and without using LinkedIn
+browser automation or any policy-violating method.
+
+### What was verified first
+
+- No earlier LinkedIn feature plan or requirements document exists in this
+  repo, in saved memory, or in workspace files (searched 2026-10-29); the
+  requirements implemented are the ones in the 2026-10-29 instruction.
+- LinkedIn API/policy check (web search, 2026-10-29, sources in
+  LINKEDIN_COMMENT_ASSISTANT.md): Company Page replies need the approved
+  Community Management API (`r/w_organization_social_feed`,
+  `rw_organization_admin`, page ADMINISTRATOR/CONTENT_ADMIN role); personal
+  profile commenting needs `w_member_social_feed` (Community Management,
+  not self-serve Share on LinkedIn) and reading a member's own posts needs
+  restricted `r_member_social(_feed)`; the Messages API is restricted to
+  approved partners and its message data otherwise lives in the closed
+  Compliance API; User Agreement s.8.2 prohibits browser plugins/extensions
+  that scrape or automate activity on LinkedIn, with account restriction as
+  the stated consequence. Full record: LINKEDIN_COMMENT_ASSISTANT.md.
+
+### What changed (all local, no LinkedIn sending/scraping/automation)
+
+- **New `src/linkedin-rules.ts`**: pure rule engine — keyword matching
+  (case-insensitive substring, empty keywords never match), priority
+  selection, `{{author}}` template rendering, linkedin.com URL validation,
+  rule/comment validation, starter rules/templates. No chrome, DOM, fetch,
+  or LinkedIn API call anywhere in this file.
+- **New LinkedIn tab (`src/popup.ts`, `static/popup.html`,
+  `static/style.css`)**: manual comment form (Personal/Company, commenter,
+  optional linkedin.com post link, comment text), comment list with
+  account/status badges, draft list with Copy button, rule list/form, and
+  template list/form. Tab switching extended to Photos/Comments/LinkedIn.
+- **`src/types.ts`**: `LinkedInAccountKind`, `LinkedInRuleAction`,
+  `LinkedInComment`, `LinkedInRule`, `LinkedInTemplate`, `LinkedInDraft`,
+  `LinkedInManagerMessage`, `LinkedInData`; added to `BackgroundMessage`.
+- **`src/background.ts`**: LinkedIn storage only, on separate keys
+  (`li_comments`, `li_rules`, `li_templates`, `li_drafts`, max 1,000
+  comments) plus the eight LinkedIn message handlers. `LinkedInDraft.apiStatus`
+  is always `"not_sent"`; drafts are never "sent" by this extension.
+- **`static/manifest.json`: unchanged on purpose** — no linkedin.com host
+  permission and no LinkedIn content script.
+- **Docs**: new `LINKEDIN_COMMENT_ASSISTANT.md` (requirements search,
+  API/policy findings, shipped-vs-blocked table, future API steps,
+  limitations); `README.md` updated with the new feature and file layout.
+
+### What was NOT implemented, and why (blocked, not skipped silently)
+
+- Automatic public replies via the official API: blocked — needs an
+  approved Community Management API app and administrator/member OAuth,
+  which do not exist for this extension. Shipped alternative: local draft
+  for the user to copy, edit, and post themselves.
+- Automatic private inbox messages: blocked — Messages API is restricted
+  to approved partners; no general public route exists. Shipped
+  alternative: local private-message draft for the user to send manually.
+- LinkedIn comment scanning/scraping and browser automation: blocked —
+  prohibited by LinkedIn User Agreement s.8.2 for browser extensions.
+  Shipped alternative: manual comment entry by the user.
+
+### Verification
+
+- `npm run typecheck` passed; `npm run build` (via `npm run check`) passed
+  (dist/ rebuilt, including the LinkedIn tab and handlers).
+- LinkedIn rule-engine unit tests passed in Node (esbuild bundle of
+  `src/linkedin-rules.ts`, 6 test groups): personal thank-you -> public
+  draft with author rendered and `apiStatus: "not_sent"`; pricing ->
+  private-message draft; company-only rule does not match personal posts;
+  empty-keyword and disabled rules never match; ignore action -> ignored
+  with no draft; no-rule case; linkedin.com URL validation (facebook.com
+  and invalid URLs rejected); rule/comment validation errors.
+- Regression by byte comparison against the pre-LinkedIn baseline:
+  `src/content.ts`, `src/comment-scanner.ts`, `src/photo-picker.ts`,
+  `src/photo-extractor.ts`, `src/photo-clipboard.ts`, `src/offscreen.ts`,
+  and `static/manifest.json` are unchanged, so Facebook photo downloading
+  and comment scanning code paths are untouched.
+- `dist/background.js` contains no LinkedIn fetch: its only linkedin.com
+  matches are the URL-validation hostname checks.
+- **Live LinkedIn testing is pending** (as is live Facebook testing for
+  Part 2): no real LinkedIn comment has been pasted, drafted, and manually
+  sent through this UI yet. Do not report the LinkedIn feature as
+  live-verified until that is done.
+
+### Delivery status (updated after the push in this same job)
+
+- ZIP: created and verified (see the job's final report).
+- Local commit: created in the working git clone (see the job's final report).
+- GitHub push: see the job's final report for the verified remote commit.
+
+
 ## Baseline sync — v1.6.10 (2026-10-28)
 
 - Synced the v1.6.10 ZIP (uploaded 2026-10-27, files dated 2026-10-21) to GitHub `main`.

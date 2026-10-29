@@ -27,6 +27,11 @@ import type {
   DetectedReply,
   FallbackItem,
   Job,
+  LinkedInComment,
+  LinkedInData,
+  LinkedInDraft,
+  LinkedInRule,
+  LinkedInTemplate,
   OffscreenRequest,
   ReplyResponse,
   SavedComment,
@@ -35,6 +40,13 @@ import type {
   StartResponse,
 } from "./types";
 import { isUnwantedEmojiOrUiUrl } from "./photo-extractor";
+import {
+  defaultLinkedInRules,
+  defaultLinkedInTemplates,
+  generateLinkedInDraft,
+  validateLinkedInComment,
+  validateLinkedInRule,
+} from "./linkedin-rules";
 
 const OFFSCREEN_PATH = "offscreen.html";
 const ZIP_NAME = "facebook-photos.zip";
@@ -995,6 +1007,109 @@ async function migrateCommentsIfNeeded(): Promise<{ migrated: boolean; count: nu
   return { migrated: true, count: migrated.length };
 }
 
+// ------------------------------------------------------- LinkedIn (local only)
+//
+// Separate storage keys from the Facebook comment store, so LinkedIn work
+// can never touch fb_comments or its Part 2 migration/backup. No LinkedIn
+// API call, no fetch, no content script, no automation lives here: every
+// function below reads/writes chrome.storage.local only.
+
+const LI_COMMENTS_KEY = "li_comments";
+const LI_RULES_KEY = "li_rules";
+const LI_TEMPLATES_KEY = "li_templates";
+const LI_DRAFTS_KEY = "li_drafts";
+const LI_MAX_COMMENTS = 1000;
+
+async function getLinkedInData(): Promise<LinkedInData> {
+  const result = (await chrome.storage.local.get([LI_COMMENTS_KEY, LI_RULES_KEY, LI_TEMPLATES_KEY, LI_DRAFTS_KEY])) as {
+    [LI_COMMENTS_KEY]?: LinkedInComment[];
+    [LI_RULES_KEY]?: LinkedInRule[];
+    [LI_TEMPLATES_KEY]?: LinkedInTemplate[];
+    [LI_DRAFTS_KEY]?: LinkedInDraft[];
+  };
+  const comments = result[LI_COMMENTS_KEY] ?? [];
+  const rules = result[LI_RULES_KEY] ?? defaultLinkedInRules();
+  const templates = result[LI_TEMPLATES_KEY] ?? defaultLinkedInTemplates();
+  const drafts = result[LI_DRAFTS_KEY] ?? [];
+  // Seed defaults once, so the popup always has starter rules/templates.
+  if (result[LI_RULES_KEY] === undefined || result[LI_TEMPLATES_KEY] === undefined) {
+    await chrome.storage.local.set({ [LI_RULES_KEY]: rules, [LI_TEMPLATES_KEY]: templates });
+  }
+  return { comments, rules, templates, drafts };
+}
+
+async function addLinkedInComment(
+  input: Omit<LinkedInComment, "id" | "savedAt" | "status" | "source">,
+): Promise<LinkedInComment> {
+  const error = validateLinkedInComment(input);
+  if (error) throw new Error(error);
+  const data = await getLinkedInData();
+  const comment: LinkedInComment = {
+    ...input,
+    text: input.text.trim(),
+    authorName: input.authorName.trim() || "Unknown",
+    postUrl: input.postUrl.trim(),
+    id: `li-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    savedAt: Date.now(),
+    status: "pending",
+    source: "manual",
+  };
+  const comments = [comment, ...data.comments].slice(0, LI_MAX_COMMENTS);
+  await chrome.storage.local.set({ [LI_COMMENTS_KEY]: comments });
+  return comment;
+}
+
+async function deleteLinkedInComment(id: string): Promise<void> {
+  const data = await getLinkedInData();
+  await chrome.storage.local.set({
+    [LI_COMMENTS_KEY]: data.comments.filter((c) => c.id !== id),
+    [LI_DRAFTS_KEY]: data.drafts.filter((d) => d.commentId !== id),
+  });
+}
+
+async function clearLinkedInComments(): Promise<void> {
+  await chrome.storage.local.set({ [LI_COMMENTS_KEY]: [], [LI_DRAFTS_KEY]: [] });
+}
+
+async function saveLinkedInRules(rules: LinkedInRule[]): Promise<void> {
+  for (const rule of rules) {
+    const error = validateLinkedInRule(rule);
+    if (error) throw new Error(error);
+  }
+  await chrome.storage.local.set({ [LI_RULES_KEY]: rules });
+}
+
+async function saveLinkedInTemplates(templates: LinkedInTemplate[]): Promise<void> {
+  for (const t of templates) {
+    if (!t.name.trim() || !t.body.trim()) throw new Error("Template name and body are required.");
+  }
+  await chrome.storage.local.set({ [LI_TEMPLATES_KEY]: templates });
+}
+
+async function generateLinkedInDraftForComment(commentId: string): Promise<{ outcome: string; draft?: LinkedInDraft }> {
+  const data = await getLinkedInData();
+  const comment = data.comments.find((c) => c.id === commentId);
+  if (!comment) throw new Error("LinkedIn comment not found.");
+  const result = generateLinkedInDraft(comment, data.rules, data.templates);
+  if (result.outcome === "no_rule") return { outcome: "no_rule" };
+  const comments = data.comments.map((c) => (c.id === commentId ? { ...c, status: result.newStatus, matchedRuleId: result.rule?.id } : c));
+  if (result.outcome === "ignored") {
+    await chrome.storage.local.set({ [LI_COMMENTS_KEY]: comments });
+    return { outcome: "ignored" };
+  }
+  const draft: LinkedInDraft = { ...result.draft!, id: `li-draft-${Date.now()}`, createdAt: Date.now() };
+  const updatedComments = comments.map((c) => (c.id === commentId ? { ...c, draftId: draft.id } : c));
+  await chrome.storage.local.set({ [LI_COMMENTS_KEY]: updatedComments, [LI_DRAFTS_KEY]: [draft, ...data.drafts] });
+  return { outcome: "drafted", draft };
+}
+
+async function markLinkedInDraftCopied(draftId: string): Promise<void> {
+  const data = await getLinkedInData();
+  await chrome.storage.local.set({
+    [LI_DRAFTS_KEY]: data.drafts.map((d) => (d.id === draftId ? { ...d, status: "copied" } : d)),
+  });
+}
+
 async function getComments(): Promise<SavedComment[]> {
   // Part 2 migration runs before any comment read/write path, so every caller
   // (save, mark replied, popup, scanner cache) sees the migrated schema.
@@ -1934,6 +2049,56 @@ chrome.runtime.onMessage.addListener(
       case "PREPARE_REPLY_COMPOSER":
         prepareReplyComposerOnPost(message.comment)
           .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      // LinkedIn Comment Assistant — local storage + rule engine only.
+      // No case here calls LinkedIn, posts, or messages anything.
+      case "GET_LINKEDIN_DATA":
+        getLinkedInData()
+          .then((data) => sendResponse({ ok: true, ...data } as any))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "ADD_LINKEDIN_COMMENT":
+        addLinkedInComment(message.comment)
+          .then((comment) => sendResponse({ ok: true, comment } as any))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "DELETE_LINKEDIN_COMMENT":
+        deleteLinkedInComment(message.id)
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "CLEAR_LINKEDIN_COMMENTS":
+        clearLinkedInComments()
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "SAVE_LINKEDIN_RULES":
+        saveLinkedInRules(message.rules)
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "SAVE_LINKEDIN_TEMPLATES":
+        saveLinkedInTemplates(message.templates)
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "GENERATE_LINKEDIN_DRAFT":
+        generateLinkedInDraftForComment(message.commentId)
+          .then((result) => sendResponse({ ok: true, ...result } as any))
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true;
+
+      case "MARK_LINKEDIN_DRAFT_COPIED":
+        markLinkedInDraftCopied(message.draftId)
+          .then(() => sendResponse({ ok: true }))
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true;
     }

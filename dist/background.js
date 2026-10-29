@@ -26,6 +26,99 @@
     return false;
   }
 
+  // src/linkedin-rules.ts
+  function isLinkedInPostUrl(url) {
+    if (!url) return true;
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" && (parsed.hostname === "linkedin.com" || parsed.hostname === "www.linkedin.com");
+    } catch {
+      return false;
+    }
+  }
+  function normalize(text) {
+    return text.toLowerCase();
+  }
+  function ruleMatches(rule, comment) {
+    if (!rule.enabled) return false;
+    if (rule.accountKind !== "both" && rule.accountKind !== comment.accountKind) return false;
+    const keywords = rule.keywords.map((k) => k.trim().toLowerCase()).filter(Boolean);
+    if (keywords.length === 0) return false;
+    const haystack = normalize(comment.text);
+    return keywords.some((k) => haystack.includes(k));
+  }
+  function findMatchingRule(rules, comment) {
+    const matching = rules.filter((r) => ruleMatches(r, comment));
+    if (matching.length === 0) return void 0;
+    matching.sort((a, b) => b.priority - a.priority);
+    return matching[0];
+  }
+  function renderTemplate(body, comment) {
+    return body.replace(/\{\{\s*author\s*\}\}/g, comment.authorName || "there");
+  }
+  var LINKEDIN_DEFAULT_TEMPLATE_BODY = "Thank you for your comment, {{author}}! We appreciate you taking the time to share your thoughts.";
+  function generateLinkedInDraft(comment, rules, templates) {
+    const rule = findMatchingRule(rules, comment);
+    if (!rule) return { outcome: "no_rule", newStatus: comment.status };
+    if (rule.action === "ignore") {
+      return { outcome: "ignored", rule, newStatus: "ignored" };
+    }
+    const template = templates.find((t) => t.id === rule.templateId);
+    const text = template ? renderTemplate(template.body, comment) : renderTemplate(LINKEDIN_DEFAULT_TEMPLATE_BODY, comment);
+    const kind = rule.action === "private_message_draft" ? "private_message" : "public_reply";
+    return {
+      outcome: "drafted",
+      rule,
+      draft: { commentId: comment.id, kind, text, status: "draft", apiStatus: "not_sent" },
+      newStatus: "drafted"
+    };
+  }
+  function validateLinkedInRule(rule) {
+    if (!rule.name.trim()) return "Rule name is required.";
+    if (rule.keywords.filter((k) => k.trim()).length === 0) return "At least one keyword is required.";
+    if (!Number.isFinite(rule.priority)) return "Priority must be a number.";
+    return null;
+  }
+  function validateLinkedInComment(comment) {
+    if (!comment.text.trim()) return "Comment text is required.";
+    if (!isLinkedInPostUrl(comment.postUrl)) return "Post link must be a https://linkedin.com or https://www.linkedin.com URL, or left empty.";
+    return null;
+  }
+  function defaultLinkedInRules() {
+    return [
+      {
+        id: "li-rule-thanks",
+        name: "Thank-you replies",
+        accountKind: "both",
+        keywords: ["great", "thank", "helpful", "insightful", "congratulations"],
+        action: "public_reply_draft",
+        templateId: "li-tpl-thanks",
+        enabled: true,
+        priority: 10
+      },
+      {
+        id: "li-rule-pricing",
+        name: "Pricing questions -> private message draft",
+        accountKind: "both",
+        keywords: ["price", "pricing", "cost", "quote"],
+        action: "private_message_draft",
+        templateId: "li-tpl-pricing",
+        enabled: true,
+        priority: 20
+      }
+    ];
+  }
+  function defaultLinkedInTemplates() {
+    return [
+      { id: "li-tpl-thanks", name: "Thank you", body: "Thank you so much, {{author}}! Glad this resonated with you." },
+      {
+        id: "li-tpl-pricing",
+        name: "Pricing (private)",
+        body: "Hi {{author}}, thanks for asking! I will send you the pricing details in a private message shortly."
+      }
+    ];
+  }
+
   // src/background.ts
   var OFFSCREEN_PATH = "offscreen.html";
   var ZIP_NAME = "facebook-photos.zip";
@@ -762,6 +855,85 @@
       throw new Error(`Part 2 migration failed after write (${afterError}); original comments were restored from backup.`);
     }
     return { migrated: true, count: migrated.length };
+  }
+  var LI_COMMENTS_KEY = "li_comments";
+  var LI_RULES_KEY = "li_rules";
+  var LI_TEMPLATES_KEY = "li_templates";
+  var LI_DRAFTS_KEY = "li_drafts";
+  var LI_MAX_COMMENTS = 1e3;
+  async function getLinkedInData() {
+    const result = await chrome.storage.local.get([LI_COMMENTS_KEY, LI_RULES_KEY, LI_TEMPLATES_KEY, LI_DRAFTS_KEY]);
+    const comments = result[LI_COMMENTS_KEY] ?? [];
+    const rules = result[LI_RULES_KEY] ?? defaultLinkedInRules();
+    const templates = result[LI_TEMPLATES_KEY] ?? defaultLinkedInTemplates();
+    const drafts = result[LI_DRAFTS_KEY] ?? [];
+    if (result[LI_RULES_KEY] === void 0 || result[LI_TEMPLATES_KEY] === void 0) {
+      await chrome.storage.local.set({ [LI_RULES_KEY]: rules, [LI_TEMPLATES_KEY]: templates });
+    }
+    return { comments, rules, templates, drafts };
+  }
+  async function addLinkedInComment(input) {
+    const error = validateLinkedInComment(input);
+    if (error) throw new Error(error);
+    const data = await getLinkedInData();
+    const comment = {
+      ...input,
+      text: input.text.trim(),
+      authorName: input.authorName.trim() || "Unknown",
+      postUrl: input.postUrl.trim(),
+      id: `li-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: Date.now(),
+      status: "pending",
+      source: "manual"
+    };
+    const comments = [comment, ...data.comments].slice(0, LI_MAX_COMMENTS);
+    await chrome.storage.local.set({ [LI_COMMENTS_KEY]: comments });
+    return comment;
+  }
+  async function deleteLinkedInComment(id) {
+    const data = await getLinkedInData();
+    await chrome.storage.local.set({
+      [LI_COMMENTS_KEY]: data.comments.filter((c) => c.id !== id),
+      [LI_DRAFTS_KEY]: data.drafts.filter((d) => d.commentId !== id)
+    });
+  }
+  async function clearLinkedInComments() {
+    await chrome.storage.local.set({ [LI_COMMENTS_KEY]: [], [LI_DRAFTS_KEY]: [] });
+  }
+  async function saveLinkedInRules(rules) {
+    for (const rule of rules) {
+      const error = validateLinkedInRule(rule);
+      if (error) throw new Error(error);
+    }
+    await chrome.storage.local.set({ [LI_RULES_KEY]: rules });
+  }
+  async function saveLinkedInTemplates(templates) {
+    for (const t of templates) {
+      if (!t.name.trim() || !t.body.trim()) throw new Error("Template name and body are required.");
+    }
+    await chrome.storage.local.set({ [LI_TEMPLATES_KEY]: templates });
+  }
+  async function generateLinkedInDraftForComment(commentId) {
+    const data = await getLinkedInData();
+    const comment = data.comments.find((c) => c.id === commentId);
+    if (!comment) throw new Error("LinkedIn comment not found.");
+    const result = generateLinkedInDraft(comment, data.rules, data.templates);
+    if (result.outcome === "no_rule") return { outcome: "no_rule" };
+    const comments = data.comments.map((c) => c.id === commentId ? { ...c, status: result.newStatus, matchedRuleId: result.rule?.id } : c);
+    if (result.outcome === "ignored") {
+      await chrome.storage.local.set({ [LI_COMMENTS_KEY]: comments });
+      return { outcome: "ignored" };
+    }
+    const draft = { ...result.draft, id: `li-draft-${Date.now()}`, createdAt: Date.now() };
+    const updatedComments = comments.map((c) => c.id === commentId ? { ...c, draftId: draft.id } : c);
+    await chrome.storage.local.set({ [LI_COMMENTS_KEY]: updatedComments, [LI_DRAFTS_KEY]: [draft, ...data.drafts] });
+    return { outcome: "drafted", draft };
+  }
+  async function markLinkedInDraftCopied(draftId) {
+    const data = await getLinkedInData();
+    await chrome.storage.local.set({
+      [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? { ...d, status: "copied" } : d)
+    });
   }
   async function getComments() {
     await migrateCommentsIfNeeded();
@@ -1545,6 +1717,32 @@
           return true;
         case "PREPARE_REPLY_COMPOSER":
           prepareReplyComposerOnPost(message.comment).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        // LinkedIn Comment Assistant — local storage + rule engine only.
+        // No case here calls LinkedIn, posts, or messages anything.
+        case "GET_LINKEDIN_DATA":
+          getLinkedInData().then((data) => sendResponse({ ok: true, ...data })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "ADD_LINKEDIN_COMMENT":
+          addLinkedInComment(message.comment).then((comment) => sendResponse({ ok: true, comment })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "DELETE_LINKEDIN_COMMENT":
+          deleteLinkedInComment(message.id).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "CLEAR_LINKEDIN_COMMENTS":
+          clearLinkedInComments().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "SAVE_LINKEDIN_RULES":
+          saveLinkedInRules(message.rules).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "SAVE_LINKEDIN_TEMPLATES":
+          saveLinkedInTemplates(message.templates).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "GENERATE_LINKEDIN_DRAFT":
+          generateLinkedInDraftForComment(message.commentId).then((result) => sendResponse({ ok: true, ...result })).catch((e) => sendResponse({ ok: false, error: String(e) }));
+          return true;
+        case "MARK_LINKEDIN_DRAFT_COPIED":
+          markLinkedInDraftCopied(message.draftId).then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) }));
           return true;
       }
       return void 0;

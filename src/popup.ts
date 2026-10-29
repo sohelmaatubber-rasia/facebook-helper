@@ -16,6 +16,14 @@ import type {
   CheckRepliesResponse,
   CommentManagerMessage,
   CommentManagerResponse,
+  LinkedInAccountKind,
+  LinkedInComment,
+  LinkedInData,
+  LinkedInDraft,
+  LinkedInManagerMessage,
+  LinkedInRule,
+  LinkedInRuleAction,
+  LinkedInTemplate,
   CommentStatus,
   ContentRequest,
   DetectedReply,
@@ -696,20 +704,25 @@ function renderJob(job: Job | undefined): void {
 
 const tabPhotosBtn = $<HTMLButtonElement>("tabPhotos");
 const tabCommentsBtn = $<HTMLButtonElement>("tabComments");
+const tabLinkedInBtn = $<HTMLButtonElement>("tabLinkedIn");
 const sectionPhotos = $("sectionPhotos");
 const sectionComments = $("sectionComments");
+const sectionLinkedIn = $("sectionLinkedIn");
 
-function switchTab(tab: "photos" | "comments"): void {
-  const isPhotos = tab === "photos";
-  sectionPhotos.hidden = !isPhotos;
-  sectionComments.hidden = isPhotos;
-  tabPhotosBtn.classList.toggle("active", isPhotos);
-  tabCommentsBtn.classList.toggle("active", !isPhotos);
-  if (!isPhotos) void loadComments();
+function switchTab(tab: "photos" | "comments" | "linkedin"): void {
+  sectionPhotos.hidden = tab !== "photos";
+  sectionComments.hidden = tab !== "comments";
+  sectionLinkedIn.hidden = tab !== "linkedin";
+  tabPhotosBtn.classList.toggle("active", tab === "photos");
+  tabCommentsBtn.classList.toggle("active", tab === "comments");
+  tabLinkedInBtn.classList.toggle("active", tab === "linkedin");
+  if (tab === "comments") void loadComments();
+  if (tab === "linkedin") void loadLinkedIn();
 }
 
 tabPhotosBtn.addEventListener("click", () => switchTab("photos"));
 tabCommentsBtn.addEventListener("click", () => switchTab("comments"));
+tabLinkedInBtn.addEventListener("click", () => switchTab("linkedin"));
 
 // ---------------------------------------------------------------------- comment manager
 
@@ -2726,4 +2739,244 @@ chrome.storage.onChanged.addListener((changes, area) => {
       renderComments();
     }
   }
+});
+
+// ---------------------------------------------------------------------- LinkedIn Comment Assistant (local manual-assist only)
+//
+// No LinkedIn page is read, no reply is posted, and no message is sent from
+// here. Every action below either stores data the user typed/pasted, runs
+// the local rule engine via the background, or copies a draft to the
+// clipboard for the user to paste and send themselves on LinkedIn.
+
+interface LinkedInResponse {
+  ok: boolean;
+  error?: string;
+  comments?: LinkedInComment[];
+  rules?: LinkedInRule[];
+  templates?: LinkedInTemplate[];
+  drafts?: LinkedInDraft[];
+  comment?: LinkedInComment;
+  outcome?: string;
+  draft?: LinkedInDraft;
+}
+
+const liSend = (message: LinkedInManagerMessage): Promise<LinkedInResponse> =>
+  chrome.runtime.sendMessage<LinkedInManagerMessage, LinkedInResponse>(message);
+
+let liData: LinkedInData = { comments: [], rules: [], templates: [], drafts: [] };
+
+const liEl = {
+  kind: $<HTMLSelectElement>("liAccountKind"),
+  author: $<HTMLInputElement>("liAuthor"),
+  postUrl: $<HTMLInputElement>("liPostUrl"),
+  text: $<HTMLTextAreaElement>("liText"),
+  addBtn: $<HTMLButtonElement>("liAddBtn"),
+  addError: $("liAddError"),
+  filterKind: $<HTMLSelectElement>("liFilterKind"),
+  commentList: $("liCommentList"),
+  clearBtn: $<HTMLButtonElement>("liClearBtn"),
+  draftList: $("liDraftList"),
+  ruleList: $("liRuleList"),
+  ruleName: $<HTMLInputElement>("liRuleName"),
+  ruleKeywords: $<HTMLInputElement>("liRuleKeywords"),
+  ruleKind: $<HTMLSelectElement>("liRuleKind"),
+  ruleAction: $<HTMLSelectElement>("liRuleAction"),
+  ruleTemplate: $<HTMLSelectElement>("liRuleTemplate"),
+  rulePriority: $<HTMLInputElement>("liRulePriority"),
+  addRuleBtn: $<HTMLButtonElement>("liAddRuleBtn"),
+  ruleError: $("liRuleError"),
+  templateList: $("liTemplateList"),
+  tplName: $<HTMLInputElement>("liTplName"),
+  tplBody: $<HTMLTextAreaElement>("liTplBody"),
+  addTplBtn: $<HTMLButtonElement>("liAddTplBtn"),
+  tplError: $("liTplError"),
+};
+
+function liShowError(el: HTMLElement, message: string): void {
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function liEscape(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderLinkedIn(): void {
+  const filter = liEl.filterKind.value;
+  const comments = liData.comments.filter((c) => filter === "all" || c.accountKind === filter);
+  liEl.commentList.innerHTML = comments.length
+    ? comments
+        .map(
+          (c) => `<div class="li-card">
+            <div><strong>${liEscape(c.authorName)}</strong> <span class="li-badge">${c.accountKind}</span> <span class="li-badge">${c.status}</span></div>
+            <p>${liEscape(c.text)}</p>
+            ${c.postUrl ? `<a href="${liEscape(c.postUrl)}" target="_blank" rel="noopener">Open post on LinkedIn</a>` : ""}
+            <div class="li-actions">
+              <button data-li-draft="${c.id}">Generate draft</button>
+              <button data-li-delete="${c.id}">Delete</button>
+            </div>
+          </div>`,
+        )
+        .join("")
+    : "<p>No LinkedIn comments yet. Add one manually above.</p>";
+  liEl.draftList.innerHTML = liData.drafts.length
+    ? liData.drafts
+        .map(
+          (d) => `<div class="li-card">
+            <div><span class="li-badge">${d.kind === "public_reply" ? "Public reply draft" : "Private message draft"}</span>
+            <span class="li-badge">${d.status === "copied" ? "Copied" : "Draft — not sent"}</span></div>
+            <p>${liEscape(d.text)}</p>
+            <button data-li-copy="${d.id}">Copy draft</button>
+          </div>`,
+        )
+        .join("")
+    : "<p>No drafts yet. Add a comment, then Generate draft.</p>";
+  liEl.ruleList.innerHTML = liData.rules.length
+    ? liData.rules
+        .map(
+          (r) => `<div class="li-card">
+            <div><strong>${liEscape(r.name)}</strong> <span class="li-badge">${r.action}</span>
+            <span class="li-badge">${r.accountKind}</span> <span class="li-badge">priority ${r.priority}</span>
+            <span class="li-badge">${r.enabled ? "enabled" : "disabled"}</span></div>
+            <p>Keywords: ${liEscape(r.keywords.join(", "))}</p>
+            <button data-li-rule-delete="${r.id}">Delete rule</button>
+          </div>`,
+        )
+        .join("")
+    : "<p>No rules yet.</p>";
+  liEl.templateList.innerHTML = liData.templates.length
+    ? liData.templates
+        .map(
+          (t) => `<div class="li-card">
+            <div><strong>${liEscape(t.name)}</strong></div>
+            <p>${liEscape(t.body)}</p>
+            <button data-li-tpl-delete="${t.id}">Delete template</button>
+          </div>`,
+        )
+        .join("")
+    : "<p>No templates yet.</p>";
+  liEl.ruleTemplate.innerHTML = liData.templates.map((t) => `<option value="${t.id}">${liEscape(t.name)}</option>`).join("");
+
+  liEl.commentList.querySelectorAll<HTMLButtonElement>("[data-li-draft]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const res = await liSend({ type: "GENERATE_LINKEDIN_DRAFT", commentId: btn.dataset.liDraft! });
+      if (!res.ok) {
+        liShowError(liEl.addError, res.error ?? "Could not generate a draft.");
+        return;
+      }
+      if (res.outcome === "no_rule") liShowError(liEl.addError, "No enabled rule matched this comment. Add or enable a matching rule first.");
+      await loadLinkedIn();
+    });
+  });
+  liEl.commentList.querySelectorAll<HTMLButtonElement>("[data-li-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await liSend({ type: "DELETE_LINKEDIN_COMMENT", id: btn.dataset.liDelete! });
+      await loadLinkedIn();
+    });
+  });
+  liEl.draftList.querySelectorAll<HTMLButtonElement>("[data-li-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const draft = liData.drafts.find((d) => d.id === btn.dataset.liCopy);
+      if (!draft) return;
+      await navigator.clipboard.writeText(draft.text);
+      await liSend({ type: "MARK_LINKEDIN_DRAFT_COPIED", draftId: draft.id });
+      await loadLinkedIn();
+    });
+  });
+  liEl.ruleList.querySelectorAll<HTMLButtonElement>("[data-li-rule-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const rules = liData.rules.filter((r) => r.id !== btn.dataset.liRuleDelete);
+      await liSend({ type: "SAVE_LINKEDIN_RULES", rules });
+      await loadLinkedIn();
+    });
+  });
+  liEl.templateList.querySelectorAll<HTMLButtonElement>("[data-li-tpl-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const templates = liData.templates.filter((t) => t.id !== btn.dataset.liTplDelete);
+      await liSend({ type: "SAVE_LINKEDIN_TEMPLATES", templates });
+      await loadLinkedIn();
+    });
+  });
+}
+
+async function loadLinkedIn(): Promise<void> {
+  const res = await liSend({ type: "GET_LINKEDIN_DATA" });
+  if (!res.ok) {
+    liShowError(liEl.addError, res.error ?? "Could not load LinkedIn data.");
+    return;
+  }
+  liData = {
+    comments: res.comments ?? [],
+    rules: res.rules ?? [],
+    templates: res.templates ?? [],
+    drafts: res.drafts ?? [],
+  };
+  renderLinkedIn();
+}
+
+liEl.addBtn.addEventListener("click", async () => {
+  liEl.addError.hidden = true;
+  const res = await liSend({
+    type: "ADD_LINKEDIN_COMMENT",
+    comment: {
+      text: liEl.text.value,
+      authorName: liEl.author.value,
+      postUrl: liEl.postUrl.value,
+      accountKind: liEl.kind.value as LinkedInAccountKind,
+    },
+  });
+  if (!res.ok) {
+    liShowError(liEl.addError, res.error ?? "Could not add the comment.");
+    return;
+  }
+  liEl.text.value = "";
+  liEl.author.value = "";
+  liEl.postUrl.value = "";
+  await loadLinkedIn();
+});
+
+liEl.filterKind.addEventListener("change", renderLinkedIn);
+
+liEl.clearBtn.addEventListener("click", async () => {
+  await liSend({ type: "CLEAR_LINKEDIN_COMMENTS" });
+  await loadLinkedIn();
+});
+
+liEl.addRuleBtn.addEventListener("click", async () => {
+  liEl.ruleError.hidden = true;
+  const rule: LinkedInRule = {
+    id: `li-rule-${Date.now()}`,
+    name: liEl.ruleName.value,
+    keywords: liEl.ruleKeywords.value.split(",").map((k) => k.trim()).filter(Boolean),
+    accountKind: liEl.ruleKind.value as LinkedInRule["accountKind"],
+    action: liEl.ruleAction.value as LinkedInRuleAction,
+    templateId: liEl.ruleTemplate.value,
+    enabled: true,
+    priority: Number(liEl.rulePriority.value) || 10,
+  };
+  const res = await liSend({ type: "SAVE_LINKEDIN_RULES", rules: [...liData.rules, rule] });
+  if (!res.ok) {
+    liShowError(liEl.ruleError, res.error ?? "Could not save the rule.");
+    return;
+  }
+  liEl.ruleName.value = "";
+  liEl.ruleKeywords.value = "";
+  await loadLinkedIn();
+});
+
+liEl.addTplBtn.addEventListener("click", async () => {
+  liEl.tplError.hidden = true;
+  const template: LinkedInTemplate = {
+    id: `li-tpl-${Date.now()}`,
+    name: liEl.tplName.value,
+    body: liEl.tplBody.value,
+  };
+  const res = await liSend({ type: "SAVE_LINKEDIN_TEMPLATES", templates: [...liData.templates, template] });
+  if (!res.ok) {
+    liShowError(liEl.tplError, res.error ?? "Could not save the template.");
+    return;
+  }
+  liEl.tplName.value = "";
+  liEl.tplBody.value = "";
+  await loadLinkedIn();
 });

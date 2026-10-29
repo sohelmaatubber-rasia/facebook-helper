@@ -249,9 +249,106 @@ export type OffscreenReport =
   | { type: "ZIP_ERROR"; message: string; failed: number; total: number };
 
 /** `target` is set by the content script and offscreen document; the popup omits it. */
-export type BackgroundMessage = (PopupMessage | ContentReport | OffscreenReport | CommentMessage | CommentManagerMessage) & {
+export type BackgroundMessage = (PopupMessage | ContentReport | OffscreenReport | CommentMessage | CommentManagerMessage | LinkedInManagerMessage) & {
   target?: "background";
 };
+
+// ------------------------------------------------------- LinkedIn Comment Assistant
+//
+// SAFETY BOUNDARY (see LINKEDIN_COMMENT_ASSISTANT.md for the full record):
+// This extension does NOT post to LinkedIn, does NOT send LinkedIn messages,
+// does NOT scrape LinkedIn, and does NOT run a content script on linkedin.com.
+// There is no LinkedIn host permission in static/manifest.json, no LinkedIn
+// API token stored anywhere, and no fetch() to linkedin.com. The LinkedIn
+// feature is a LOCAL, MANUAL-ASSIST tool only: the user pastes a comment they
+// saw on LinkedIn, the local rule engine suggests a draft, and the user
+// copies that draft, edits it, and posts/sends it themselves on LinkedIn.
+// Anything that would send automatically is deliberately NOT implemented:
+// public replies via the official API need an approved Community Management
+// API app (see the doc), and private inbox messages via the official API are
+// restricted to approved Compliance partners, so they are not available to
+// this extension at all. Do not "complete" this feature by adding LinkedIn
+// browser automation; that would violate LinkedIn's User Agreement s.8.2
+// and the user's instruction for this feature.
+
+/** Which LinkedIn surface a comment belongs to. */
+export type LinkedInAccountKind = "personal" | "company";
+
+/** What a user-configured rule does when it matches a LinkedIn comment. */
+export type LinkedInRuleAction = "public_reply_draft" | "private_message_draft" | "ignore";
+
+/** A LinkedIn comment entered MANUALLY by the user (never scraped). */
+export interface LinkedInComment {
+  id: string;
+  text: string;
+  authorName: string;
+  /** Optional link to the LinkedIn post; must be a linkedin.com URL when set. */
+  postUrl: string;
+  accountKind: LinkedInAccountKind;
+  /** Always "manual": there is no LinkedIn scanner in this extension. */
+  source: "manual";
+  savedAt: number;
+  status: "pending" | "drafted" | "ignored";
+  matchedRuleId?: string;
+  draftId?: string;
+}
+
+/** A user-configured keyword rule. Empty keywords never match (no catch-all). */
+export interface LinkedInRule {
+  id: string;
+  name: string;
+  /** "both" means the rule applies to personal and company posts. */
+  accountKind: LinkedInAccountKind | "both";
+  /** Case-insensitive substring keywords; at least one is required. */
+  keywords: string[];
+  action: LinkedInRuleAction;
+  templateId: string;
+  enabled: boolean;
+  /** Higher priority wins when several rules match the same comment. */
+  priority: number;
+}
+
+/** A reply/message template. {{author}} is replaced with the commenter's name. */
+export interface LinkedInTemplate {
+  id: string;
+  name: string;
+  body: string;
+}
+
+/**
+ * A draft the user may copy and send themselves on LinkedIn.
+ * `apiStatus` is always "not_sent": this extension never sends it, via the
+ * API or via automation. `sendStatus` therefore does not exist on purpose.
+ */
+export interface LinkedInDraft {
+  id: string;
+  commentId: string;
+  kind: "public_reply" | "private_message";
+  text: string;
+  createdAt: number;
+  /** "draft" until the user copies it, then "copied". Never "sent" by us. */
+  status: "draft" | "copied";
+  apiStatus: "not_sent";
+}
+
+/** Messages the popup sends to the background for the LinkedIn feature. */
+export type LinkedInManagerMessage =
+  | { type: "GET_LINKEDIN_DATA" }
+  | { type: "ADD_LINKEDIN_COMMENT"; comment: Omit<LinkedInComment, "id" | "savedAt" | "status" | "source"> }
+  | { type: "DELETE_LINKEDIN_COMMENT"; id: string }
+  | { type: "CLEAR_LINKEDIN_COMMENTS" }
+  | { type: "SAVE_LINKEDIN_RULES"; rules: LinkedInRule[] }
+  | { type: "SAVE_LINKEDIN_TEMPLATES"; templates: LinkedInTemplate[] }
+  | { type: "GENERATE_LINKEDIN_DRAFT"; commentId: string }
+  | { type: "MARK_LINKEDIN_DRAFT_COPIED"; draftId: string };
+
+/** Shape the background returns for GET_LINKEDIN_DATA (via sendResponse). */
+export interface LinkedInData {
+  comments: LinkedInComment[];
+  rules: LinkedInRule[];
+  templates: LinkedInTemplate[];
+  drafts: LinkedInDraft[];
+}
 
 // ---------------------------------------------- background -> offscreen document
 
