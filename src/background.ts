@@ -46,6 +46,7 @@ import {
   defaultLinkedInTemplates,
   generateLinkedInDraft,
   markDraftSentManually,
+  markLinkedInCommentSent,
   validateLinkedInComment,
   validateLinkedInRule,
 } from "./linkedin-rules";
@@ -1125,8 +1126,14 @@ async function updateLinkedInDraft(draftId: string, text: string): Promise<void>
 
 async function markLinkedInDraftSentManually(draftId: string): Promise<void> {
   const data = await getLinkedInData();
+  const draft = data.drafts.find((d) => d.id === draftId);
   await chrome.storage.local.set({
     [LI_DRAFTS_KEY]: data.drafts.map((d) => (d.id === draftId ? markDraftSentManually(d) : d)),
+    // Keep the comment's triage status in sync with the manual send, so a
+    // sent comment no longer sits in the list as merely "drafted".
+    [LI_COMMENTS_KEY]: draft
+      ? data.comments.map((c) => (c.id === draft.commentId ? markLinkedInCommentSent(c) : c))
+      : data.comments,
   });
 }
 

@@ -288,7 +288,9 @@ export interface LinkedInComment {
   /** Always "manual": there is no LinkedIn scanner in this extension. */
   source: "manual";
   savedAt: number;
-  status: "pending" | "drafted" | "ignored";
+  /** "sent" means the user pressed "I sent this on LinkedIn" for this comment's draft;
+   *  it is a local record of the user's own send, never an API send. */
+  status: "pending" | "drafted" | "ignored" | "sent";
   matchedRuleId?: string;
   draftId?: string;
 }

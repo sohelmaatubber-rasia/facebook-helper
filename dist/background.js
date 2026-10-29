@@ -85,6 +85,10 @@
   function markDraftSentManually(draft) {
     return { ...draft, status: "sent_manually", apiStatus: "not_sent" };
   }
+  function markLinkedInCommentSent(comment) {
+    if (comment.status !== "drafted") return comment;
+    return { ...comment, status: "sent" };
+  }
   function validateLinkedInRule(rule) {
     if (!rule.name.trim()) return "Rule name is required.";
     if (rule.keywords.filter((k) => k.trim()).length === 0) return "At least one keyword is required.";
@@ -959,8 +963,12 @@
   }
   async function markLinkedInDraftSentManually(draftId) {
     const data = await getLinkedInData();
+    const draft = data.drafts.find((d) => d.id === draftId);
     await chrome.storage.local.set({
-      [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? markDraftSentManually(d) : d)
+      [LI_DRAFTS_KEY]: data.drafts.map((d) => d.id === draftId ? markDraftSentManually(d) : d),
+      // Keep the comment's triage status in sync with the manual send, so a
+      // sent comment no longer sits in the list as merely "drafted".
+      [LI_COMMENTS_KEY]: draft ? data.comments.map((c) => c.id === draft.commentId ? markLinkedInCommentSent(c) : c) : data.comments
     });
   }
   async function getComments() {

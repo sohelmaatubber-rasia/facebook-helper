@@ -49,7 +49,7 @@ in the next section.
    the text **yourself** on LinkedIn. A draft's status becomes "Copied"
    after copying. If you already sent it yourself, press **"I sent this on
    LinkedIn"**: the draft is marked `"sent_manually"` — a local record of
-   your own action only. It is never "Sent" by this extension, and its
+   your own action only — and the linked comment's status moves from `"drafted"` to `"sent"`, so the sent comment no longer sits in the list as merely drafted. It is never "Sent" by this extension, and its
    `apiStatus` is always `"not_sent"`.
 
 ## What is implemented, file by file
@@ -204,9 +204,17 @@ any API work, because LinkedIn changes these gates.
 - **No LinkedIn account connection**: there is no OAuth, no token, and no
   way to verify that a "Company page" comment actually belongs to a page the
   user administers. The account-type field is the user's own label.
-- **Chrome popup clicks not yet tested**: Edit/Save/Copy/"I sent this"
-  buttons were verified at logic + build level (unit tests, dist presence),
-  not by clicking through the real Chrome popup. Live LinkedIn sending is
-  also still pending (see above).
+- **Chrome popup clicks now tested (2026-10-29 verification job):** a
+  headless-Chrome UI test loaded `dist/` as an unpacked extension and
+  clicked through the real popup UI — 12/12 PASS (add comment, draft
+  preview, Edit→Save, Edit→Cancel, empty-save rejection, Copy→Copied,
+  "I sent this"→sent badge, comment drafted→sent, reopen persistence,
+  edit-after-sent keeping `sent_manually` + `apiStatus: "not_sent"`,
+  Delete, Clear). That test also caught and fixed a real bug: the popup
+  script tag used to sit before the LinkedIn section, so the popup crashed
+  on load with `popup.html is missing #sectionLinkedIn`; the script tag
+  now sits after the section. Live LinkedIn sending is still pending
+  (see above) — the UI test used a pasted test comment, not a real
+  LinkedIn account, and it ran in this environment's headless Chrome.
 - **Drafts are plain text**: no @-mentions, attachments, or formatting are
   generated; the user adds those when editing on LinkedIn.

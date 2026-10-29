@@ -1,5 +1,74 @@
 # Changelog
 
+## LinkedIn verification & completion (2026-10-29)
+
+### Critical bug found by the first real Chrome UI test — and fixed
+
+- **Bug:** in `static/popup.html` the `<script src="popup.js">` tag sat
+  *before* the LinkedIn `<section id="sectionLinkedIn">`, which was appended
+  at the end of the body. A classic script is executed as soon as the
+  parser reaches it, so at run time `document.getElementById
+  ("sectionLinkedIn")` returned null and the popup's `$()` helper threw
+  `popup.html is missing #sectionLinkedIn`. The throw happened during tab
+  initialisation, so tab switching (Photos/Comments/LinkedIn) was dead and
+  no LinkedIn code ever ran in a real popup — even though typecheck, build
+  and logic tests all passed. This is exactly why the UI test mattered.
+- **Fix (minimal, one move):** the script tag now sits after the LinkedIn
+  section, just before `</body>`. No JS logic changed for the fix itself.
+  CRLF line endings preserved, so the `static/popup.html` diff stays tiny.
+- **Verification after fix:** a headless-Chrome UI test (Puppeteer,
+  `dist/` loaded as an unpacked extension, `popup.html` opened as an
+  extension page with the real background service worker and
+  `chrome.storage.local`) clicked through the real popup UI: **12/12 PASS**
+  — manual comment add, draft generation + full preview, Edit→Save,
+  Edit→Cancel, empty-draft save rejected with an error and edit mode kept,
+  Copy→Copied, "I sent this"→Sent badge + button hidden, linked comment
+  status drafted→sent, popup reopen persistence, edit-after-sent keeping
+  `sent_manually` + `apiStatus: "not_sent"`, Delete, and Clear. A separate
+  tab-switch smoke test also passed (Photos→LinkedIn→Comments→Photos, no
+  page errors). Note on method: this ran in this environment's headless
+  Chrome, not in Brooklyn's desktop Chrome, and no message was sent on
+  real LinkedIn — the "I sent" button only records the user's own action.
+
+### Manual-workflow improvement in this job
+
+- **Comment status now follows a manual send:** `LinkedInComment.status`
+  gains `"sent"`. When the user presses "I sent this on LinkedIn", the
+  background now updates the draft (via `markDraftSentManually`) *and* the
+  linked comment (via the new pure `markLinkedInCommentSent`, which only
+  moves a `"drafted"` comment to `"sent"` — pending/ignored/sent comments
+  are untouched). Before this, a sent comment still sat in the list as
+  merely "drafted". The comment card already renders `c.status`, so "sent"
+  shows automatically. `apiStatus` is still always `"not_sent"`.
+
+### Re-verification in this job (all actually run)
+
+- GitHub: local `739dbe7` was already pushed in the previous job; remote
+  `main` head `eb1a263…` re-verified live, and all 13 files from that push
+  re-checked by remote blob SHA — **13/13 match**. No new push was needed
+  for `739dbe7` itself.
+- Previous ZIP `facebook-helper-v1.6.10-linkedin-update2.zip` re-verified:
+  42 entries, `unzip -t` clean, all required files present
+  (src/, static/, dist/, build files, README, CHANGELOG, COMMENT_ROADMAP,
+  LINKEDIN_COMMENT_ASSISTANT), key files byte-identical to the working copy.
+- `npm run typecheck` + `npm run build` (`npm run check`) passed.
+- LinkedIn rule/draft Node tests passed again, plus the new
+  `markLinkedInCommentSent` cases (drafted→sent; ignored/pending/sent
+  unchanged) and the full workflow simulation.
+- Facebook regression by byte comparison: `src/content.ts`,
+  `src/comment-scanner.ts`, `src/photo-picker.ts`, `src/photo-extractor.ts`,
+  `src/photo-clipboard.ts`, `src/offscreen.ts`, `static/manifest.json`
+  unchanged.
+- Official docs re-checked in this job (same pages as before, confirmed
+  still stating the same barriers): Messages API restricted to approved
+  partners; Comments API `w_organization_social_feed` requires an
+  organisation page role; User Agreement s.8.2 item 2 prohibits browser
+  plugins/add-ons scraping the Services.
+- **Still pending (not claimed as done):** live Facebook testing for Part 2,
+  and sending a real comment/reply on live LinkedIn (the UI test used a
+  pasted test comment, not a real LinkedIn account).
+
+
 ## LinkedIn Comment Assistant — in-app draft edit + manual-sent record (2026-10-29)
 
 Purpose: close the two workflow gaps found by a code audit of the LinkedIn

@@ -116,6 +116,15 @@ export function markDraftSentManually(draft: LinkedInDraft): LinkedInDraft {
 }
 
 /** Validate a rule before it is saved; returns an error string or null. */
+/** Mark a comment as sent after the user sent its draft themselves on LinkedIn.
+ *  Only a "drafted" comment moves to "sent"; pending/ignored/sent comments are
+ *  returned unchanged, so a stray sent-mark can never resurrect or override
+ *  an ignored comment. The draft's own status is handled by markDraftSentManually. */
+export function markLinkedInCommentSent(comment: LinkedInComment): LinkedInComment {
+  if (comment.status !== "drafted") return comment;
+  return { ...comment, status: "sent" };
+}
+
 export function validateLinkedInRule(rule: LinkedInRule): string | null {
   if (!rule.name.trim()) return "Rule name is required.";
   if (rule.keywords.filter((k) => k.trim()).length === 0) return "At least one keyword is required.";
